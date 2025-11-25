@@ -17,7 +17,28 @@ const state = {
     dateTo: null,
     groupLevels: { tipo: true, item: true, categoria: true },
     paretoThreshold: 0.8,
-    charts: {}
+    charts: {},
+    // Estado para Base de Datos
+    db: {
+        searchTerm: "",
+        currentPage: 1,
+        pageSize: 50,
+        selectedRows: new Set(),
+        filteredData: [],
+        // Filtros por columna
+        filters: {
+            tipo: "",
+            cc: "",
+            item: "",
+            categoria: "",
+            subcategoria: "",
+            detalle: "",
+            fechaDesde: null,
+            fechaHasta: null,
+            montoMin: null,
+            montoMax: null
+        }
+    }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -30,9 +51,60 @@ document.addEventListener("DOMContentLoaded", () => {
     setupExpandCollapse();
     setupParetoFilters();
     setupGroupCheckboxes();
-    // No cargar datos automáticamente - esperar a que el usuario importe un CSV
-    showEmptyState();
+    setupDatabaseControls();
+    
+    // Intentar cargar datos guardados en localStorage
+    loadFromLocalStorage();
 });
+
+// ===== PERSISTENCIA EN LOCALSTORAGE =====
+function saveToLocalStorage() {
+    try {
+        // Guardar los datos raw (sin las fechas como objetos Date)
+        const dataToSave = state.rawData.map(row => ({
+            ...row,
+            fecha: row.fecha ? row.fecha.toISOString() : null
+        }));
+        localStorage.setItem("cramsa_data", JSON.stringify(dataToSave));
+    } catch (e) {
+        console.warn("No se pudo guardar en localStorage:", e);
+    }
+}
+
+function loadFromLocalStorage() {
+    try {
+        const savedData = localStorage.getItem("cramsa_data");
+        if (savedData) {
+            const parsedData = JSON.parse(savedData);
+            if (parsedData && parsedData.length > 0) {
+                // Restaurar las fechas como objetos Date
+                state.rawData = parsedData.map(row => ({
+                    ...row,
+                    fecha: row.fecha ? new Date(row.fecha) : null
+                }));
+                
+                extractFilterOptions();
+                buildDynamicHeaders();
+                buildCCButtons();
+                applyFilters();
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn("No se pudo cargar desde localStorage:", e);
+    }
+    
+    // Si no hay datos guardados, mostrar estado vacío
+    showEmptyState();
+}
+
+function clearLocalStorage() {
+    try {
+        localStorage.removeItem("cramsa_data");
+    } catch (e) {
+        console.warn("No se pudo limpiar localStorage:", e);
+    }
+}
 
 // ===== ESTADO VACÍO =====
 function showEmptyState() {
@@ -50,7 +122,6 @@ function showEmptyState() {
     document.getElementById("kpiSaldoInicial").textContent = "$0";
     document.getElementById("kpiEntradas").textContent = "$0";
     document.getElementById("kpiSalidas").textContent = "$0";
-    document.getElementById("kpiOperacional").textContent = "$0";
     document.getElementById("kpiFinal").textContent = "$0";
 
     // Destruir gráficos
@@ -103,8 +174,10 @@ function normalizeRow(row) {
 }
 
 function excelSerialToDate(serial) {
+    // Base Excel: 30/12/1899, pero hay que sumar 1 día para corregir el offset
     const base = Date.UTC(1899, 11, 30);
-    return new Date(base + serial * 24 * 60 * 60 * 1000);
+    // Sumar 1 día (86400000 ms) para corregir el desfase
+    return new Date(base + (serial + 1) * 24 * 60 * 60 * 1000);
 }
 
 function extractFilterOptions() {
@@ -140,8 +213,9 @@ function setupNavTabs() {
     const views = {
         resumen: document.getElementById("viewResumen"),
         movimientos: document.getElementById("viewMovimientos"),
-        dashboard: document.getElementById("viewDashboard")
+        basedatos: document.getElementById("viewBasedatos")
     };
+    const filtersBar = document.querySelector(".filters-bar");
 
     tabs.forEach((tab) => {
         tab.addEventListener("click", () => {
@@ -151,6 +225,16 @@ function setupNavTabs() {
             Object.values(views).forEach((v) => v?.classList.remove("active"));
             const targetView = views[tab.dataset.view];
             if (targetView) targetView.classList.add("active");
+
+            // Ocultar barra de filtros en Base de Datos (tiene sus propios filtros)
+            if (filtersBar) {
+                filtersBar.style.display = tab.dataset.view === "basedatos" ? "none" : "flex";
+            }
+
+            // Si es la vista de base de datos, renderizar
+            if (tab.dataset.view === "basedatos") {
+                renderDatabaseTable();
+            }
         });
     });
 }
@@ -226,9 +310,16 @@ function setupImportCSV() {
             encoding: "ISO-8859-1",
             skipEmptyLines: true,
             complete: ({ data }) => {
+                // Resetear filtros de Base de Datos antes de cargar nuevos datos
+                resetDbFilters();
+                
                 processData(data);
                 buildDynamicHeaders();
                 buildCCButtons();
+                
+                // Guardar en localStorage para persistencia
+                saveToLocalStorage();
+                
                 alert(`CSV importado: ${state.rawData.length} registros cargados.`);
             },
             error: (err) => {
@@ -255,6 +346,9 @@ function setupClearData() {
             state.dateFrom = null;
             state.dateTo = null;
 
+            // Limpiar localStorage
+            clearLocalStorage();
+
             // Limpiar inputs de fecha
             const dateFrom = document.getElementById("dateFrom");
             const dateTo = document.getElementById("dateTo");
@@ -277,9 +371,53 @@ function setupClearData() {
             if (yearSelect) yearSelect.innerHTML = `<option value="all">Todos</option>`;
             if (monthSelect) monthSelect.innerHTML = `<option value="all">Todos</option>`;
 
+            // Resetear filtros de Base de Datos
+            resetDbFilters();
+
             showEmptyState();
         }
     });
+}
+
+function resetDbFilters() {
+    state.db = {
+        searchTerm: "",
+        currentPage: 1,
+        pageSize: 50,
+        selectedRows: new Set(),
+        filteredData: [],
+        filters: {
+            tipo: "",
+            cc: "",
+            item: "",
+            categoria: "",
+            subcategoria: "",
+            detalle: "",
+            fechaDesde: null,
+            fechaHasta: null,
+            montoMin: null,
+            montoMax: null
+        }
+    };
+
+    // Limpiar UI de filtros
+    const filterIds = ["dbSearch", "filterDbSubcat", "filterDbDetalle", "filterDbFechaDesde", "filterDbFechaHasta", "filterDbMontoMin", "filterDbMontoMax"];
+    filterIds.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+    });
+
+    // Resetear selects de filtro
+    ["filterDbTipo", "filterDbCC", "filterDbItem", "filterDbCategoria"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<option value="">Todos</option>`;
+    });
+
+    // Resetear checkbox de seleccionar todos
+    const selectAll = document.getElementById("dbSelectAll");
+    if (selectAll) selectAll.checked = false;
+
+    updateBulkEditButton();
 }
 
 function buildDynamicHeaders() {
@@ -710,13 +848,15 @@ function calcTotals(rows, columns) {
 
 function createHierarchyRow(id, parentId, level, tipo, item, categoria, subcategoria, totals, columns, hasChildren, isEgreso = false) {
     const parentAttr = parentId ? `data-parent="${parentId}"` : "";
-    const hiddenClass = level > 0 ? "row-hidden" : "";
-    const collapsedClass = hasChildren && level === 0 ? "" : "";
+    // Por defecto: niveles 0 y 1 visibles, niveles 2 y 3 ocultos
+    const hiddenClass = level >= 2 ? "row-hidden" : "";
+    // Nivel 1 empieza colapsado (sus hijos nivel 2 están ocultos)
+    const collapsedClass = (level === 1 && hasChildren) ? "row-collapsed" : "";
     const expandIcon = hasChildren ? `<span class="expand-icon">▾</span>` : "";
     const egresoClass = (level === 2 && isEgreso) ? "row-egreso" : "";
 
     return `
-        <tr class="row-level-${level} ${hiddenClass} ${collapsedClass} ${egresoClass}" data-id="${id}" data-level="${level}" ${parentAttr}>
+        <tr class="row-level-${level} ${egresoClass} ${hiddenClass} ${collapsedClass}" data-id="${id}" data-level="${level}" ${parentAttr}>
             <td class="col-expand">${expandIcon}</td>
             <td class="col-tipo">${tipo}</td>
             <td class="col-item">${item}</td>
@@ -725,7 +865,7 @@ function createHierarchyRow(id, parentId, level, tipo, item, categoria, subcateg
             ${totals.map((v, idx) => {
                 const isNeg = v < 0;
                 const is2026 = idx >= 10;
-                return `<td class="${isNeg ? "val-negative" : ""} ${is2026 ? "col-2026" : ""}">${v !== 0 ? formatNumber(v) : ""}</td>`;
+                return `<td class="col-value ${isNeg ? "val-negative" : ""} ${is2026 ? "col-2026" : ""}">${v !== 0 ? formatNumber(v) : ""}</td>`;
             }).join("")}
         </tr>
     `;
@@ -779,14 +919,12 @@ function renderKPIs() {
     const saldoInicial = data.filter((r) => r.tipo === "03_Saldos iniciales").reduce((acc, r) => acc + r.monto, 0);
     const ingresos = data.filter((r) => r.tipo === "01_Ingreso").reduce((acc, r) => acc + r.monto, 0);
     const egresos = data.filter((r) => r.tipo === "02_Cargo").reduce((acc, r) => acc + Math.abs(r.monto), 0);
-    const operacional = ingresos - egresos;
-    const final = saldoInicial + operacional;
+    const saldoFinal = saldoInicial + ingresos - egresos;
 
     document.getElementById("kpiSaldoInicial").textContent = formatCurrency(saldoInicial);
     document.getElementById("kpiEntradas").textContent = formatCurrency(ingresos);
     document.getElementById("kpiSalidas").textContent = formatCurrency(-egresos);
-    document.getElementById("kpiOperacional").textContent = formatCurrency(operacional);
-    document.getElementById("kpiFinal").textContent = formatCurrency(final);
+    document.getElementById("kpiFinal").textContent = formatCurrency(saldoFinal);
 }
 
 function renderLineChart() {
@@ -1279,4 +1417,599 @@ function formatAxis(value) {
     if (Math.abs(value) >= 1e6) return `${(value / 1e6).toFixed(1)} M`;   // Millones
     if (Math.abs(value) >= 1e3) return `${(value / 1e3).toFixed(0)} K`;   // Miles
     return value;
+}
+
+// ===== BASE DE DATOS =====
+function setupDatabaseControls() {
+    // Búsqueda global
+    const searchInput = document.getElementById("dbSearch");
+    searchInput?.addEventListener("input", debounce(() => {
+        state.db.searchTerm = searchInput.value.toLowerCase();
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    // Filtros por columna (selects)
+    document.getElementById("filterDbTipo")?.addEventListener("change", (e) => {
+        state.db.filters.tipo = e.target.value;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    document.getElementById("filterDbCC")?.addEventListener("change", (e) => {
+        state.db.filters.cc = e.target.value;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    document.getElementById("filterDbItem")?.addEventListener("change", (e) => {
+        state.db.filters.item = e.target.value;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    document.getElementById("filterDbCategoria")?.addEventListener("change", (e) => {
+        state.db.filters.categoria = e.target.value;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    // Filtros por columna (texto)
+    document.getElementById("filterDbSubcat")?.addEventListener("input", debounce((e) => {
+        state.db.filters.subcategoria = e.target.value.toLowerCase();
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    document.getElementById("filterDbDetalle")?.addEventListener("input", debounce((e) => {
+        state.db.filters.detalle = e.target.value.toLowerCase();
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    // Filtros de fecha
+    document.getElementById("filterDbFechaDesde")?.addEventListener("change", (e) => {
+        state.db.filters.fechaDesde = e.target.value ? new Date(e.target.value) : null;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    document.getElementById("filterDbFechaHasta")?.addEventListener("change", (e) => {
+        state.db.filters.fechaHasta = e.target.value ? new Date(e.target.value) : null;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    // Filtros de monto
+    document.getElementById("filterDbMontoMin")?.addEventListener("input", debounce((e) => {
+        state.db.filters.montoMin = e.target.value ? parseFloat(e.target.value) : null;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    document.getElementById("filterDbMontoMax")?.addEventListener("input", debounce((e) => {
+        state.db.filters.montoMax = e.target.value ? parseFloat(e.target.value) : null;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    // Limpiar filtros
+    document.getElementById("btnClearDbFilters")?.addEventListener("click", clearDbFilters);
+
+    // Paginación
+    document.getElementById("dbPrevPage")?.addEventListener("click", () => {
+        if (state.db.currentPage > 1) {
+            state.db.currentPage--;
+            renderDatabaseTable();
+        }
+    });
+
+    document.getElementById("dbNextPage")?.addEventListener("click", () => {
+        const totalPages = getTotalPages();
+        if (state.db.currentPage < totalPages) {
+            state.db.currentPage++;
+            renderDatabaseTable();
+        }
+    });
+
+    document.getElementById("dbPageSize")?.addEventListener("change", (e) => {
+        state.db.pageSize = e.target.value === "all" ? "all" : parseInt(e.target.value);
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
+    // Seleccionar todos
+    document.getElementById("dbSelectAll")?.addEventListener("change", (e) => {
+        const checkboxes = document.querySelectorAll("#dbBody input[type='checkbox']");
+        checkboxes.forEach((cb) => {
+            cb.checked = e.target.checked;
+            const idx = parseInt(cb.dataset.index);
+            if (e.target.checked) {
+                state.db.selectedRows.add(idx);
+            } else {
+                state.db.selectedRows.delete(idx);
+            }
+        });
+        updateDbStats();
+        updateBulkEditButton();
+    });
+
+    // Exportar CSV
+    document.getElementById("btnExportCSV")?.addEventListener("click", exportToCSV);
+
+    // Modal individual
+    document.getElementById("modalClose")?.addEventListener("click", closeModal);
+    document.getElementById("modalCancel")?.addEventListener("click", closeModal);
+    document.getElementById("modalSave")?.addEventListener("click", saveEditedRow);
+
+    // Cerrar modal al hacer click fuera
+    document.getElementById("editModal")?.addEventListener("click", (e) => {
+        if (e.target.id === "editModal") closeModal();
+    });
+
+    // Edición masiva
+    document.getElementById("btnBulkEdit")?.addEventListener("click", openBulkEditModal);
+    document.getElementById("bulkModalClose")?.addEventListener("click", closeBulkModal);
+    document.getElementById("bulkModalCancel")?.addEventListener("click", closeBulkModal);
+    document.getElementById("bulkModalSave")?.addEventListener("click", saveBulkEdit);
+
+    document.getElementById("bulkEditModal")?.addEventListener("click", (e) => {
+        if (e.target.id === "bulkEditModal") closeBulkModal();
+    });
+
+    // Checkboxes de edición masiva
+    setupBulkCheckboxes();
+}
+
+function setupBulkCheckboxes() {
+    const fields = ["Tipo", "CC", "Item", "Categoria", "Subcategoria"];
+    fields.forEach((field) => {
+        const checkbox = document.getElementById(`bulkCheck${field}`);
+        const input = document.getElementById(`bulk${field}`);
+        checkbox?.addEventListener("change", () => {
+            if (input) input.disabled = !checkbox.checked;
+        });
+    });
+}
+
+function clearDbFilters() {
+    // Reset state
+    state.db.filters = {
+        tipo: "",
+        cc: "",
+        item: "",
+        categoria: "",
+        subcategoria: "",
+        detalle: "",
+        fechaDesde: null,
+        fechaHasta: null,
+        montoMin: null,
+        montoMax: null
+    };
+    state.db.searchTerm = "";
+    state.db.currentPage = 1;
+
+    // Reset UI
+    document.getElementById("dbSearch").value = "";
+    document.getElementById("filterDbTipo").value = "";
+    document.getElementById("filterDbCC").value = "";
+    document.getElementById("filterDbItem").value = "";
+    document.getElementById("filterDbCategoria").value = "";
+    document.getElementById("filterDbSubcat").value = "";
+    document.getElementById("filterDbDetalle").value = "";
+    document.getElementById("filterDbFechaDesde").value = "";
+    document.getElementById("filterDbFechaHasta").value = "";
+    document.getElementById("filterDbMontoMin").value = "";
+    document.getElementById("filterDbMontoMax").value = "";
+
+    renderDatabaseTable();
+}
+
+function updateBulkEditButton() {
+    const btn = document.getElementById("btnBulkEdit");
+    if (btn) {
+        btn.disabled = state.db.selectedRows.size === 0;
+    }
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+function renderDatabaseTable() {
+    const tbody = document.getElementById("dbBody");
+    if (!tbody) return;
+
+    if (!state.rawData.length) {
+        tbody.innerHTML = `<tr><td colspan="9" class="empty-message">Importe un archivo CSV para visualizar los datos</td></tr>`;
+        updateDbStats();
+        return;
+    }
+
+    // Poblar filtros de columna con opciones únicas
+    populateDbFilterOptions();
+
+    // Aplicar todos los filtros
+    let filtered = state.rawData;
+
+    // Búsqueda global
+    if (state.db.searchTerm) {
+        filtered = filtered.filter((row) => {
+            const searchStr = `${row.tipo} ${row.cc} ${row.item} ${row.categoria} ${row.subcategoria} ${row.detalle}`.toLowerCase();
+            return searchStr.includes(state.db.searchTerm);
+        });
+    }
+
+    // Filtros por columna
+    const f = state.db.filters;
+    if (f.tipo) filtered = filtered.filter((r) => r.tipo === f.tipo);
+    if (f.cc) filtered = filtered.filter((r) => r.cc === f.cc);
+    if (f.item) filtered = filtered.filter((r) => r.item === f.item);
+    if (f.categoria) filtered = filtered.filter((r) => r.categoria === f.categoria);
+    if (f.subcategoria) filtered = filtered.filter((r) => (r.subcategoria || "").toLowerCase().includes(f.subcategoria));
+    if (f.detalle) filtered = filtered.filter((r) => (r.detalle || "").toLowerCase().includes(f.detalle));
+    if (f.fechaDesde) filtered = filtered.filter((r) => r.fecha >= f.fechaDesde);
+    if (f.fechaHasta) filtered = filtered.filter((r) => r.fecha <= f.fechaHasta);
+    if (f.montoMin !== null) filtered = filtered.filter((r) => r.monto >= f.montoMin);
+    if (f.montoMax !== null) filtered = filtered.filter((r) => r.monto <= f.montoMax);
+
+    state.db.filteredData = filtered;
+
+    // Paginación
+    const pageSize = state.db.pageSize === "all" ? filtered.length : state.db.pageSize;
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    state.db.currentPage = Math.min(state.db.currentPage, totalPages);
+
+    const startIdx = (state.db.currentPage - 1) * pageSize;
+    const endIdx = startIdx + pageSize;
+    const pageData = filtered.slice(startIdx, endIdx);
+
+    // Renderizar filas
+    let html = "";
+    pageData.forEach((row) => {
+        const globalIdx = state.rawData.indexOf(row);
+        const isSelected = state.db.selectedRows.has(globalIdx);
+        const fechaStr = row.fecha ? row.fecha.toLocaleDateString("es-CL") : "-";
+        const montoClass = row.monto < 0 ? "val-negative" : row.monto > 0 ? "val-positive" : "";
+
+        html += `
+            <tr class="${isSelected ? "selected" : ""}" data-index="${globalIdx}">
+                <td class="col-check">
+                    <input type="checkbox" data-index="${globalIdx}" ${isSelected ? "checked" : ""}>
+                </td>
+                <td>${row.tipo || "-"}</td>
+                <td>${row.cc || "-"}</td>
+                <td>${row.item || "-"}</td>
+                <td>${row.categoria || "-"}</td>
+                <td>${row.subcategoria || "-"}</td>
+                <td title="${row.detalle || ""}">${truncateText(row.detalle, 30) || "-"}</td>
+                <td>${fechaStr}</td>
+                <td class="${montoClass}">${formatCurrency(row.monto)}</td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html || `<tr><td colspan="9" class="empty-message">No se encontraron resultados</td></tr>`;
+
+    // Setup event listeners para checkboxes y click en filas
+    tbody.querySelectorAll("tr[data-index]").forEach((tr) => {
+        const checkbox = tr.querySelector("input[type='checkbox']");
+        
+        // Click en checkbox
+        checkbox?.addEventListener("change", (e) => {
+            e.stopPropagation();
+            const idx = parseInt(e.target.dataset.index);
+            if (e.target.checked) {
+                state.db.selectedRows.add(idx);
+                tr.classList.add("selected");
+            } else {
+                state.db.selectedRows.delete(idx);
+                tr.classList.remove("selected");
+            }
+            updateDbStats();
+            updateBulkEditButton();
+        });
+
+        // Doble click en fila para editar
+        tr.addEventListener("dblclick", () => {
+            const idx = parseInt(tr.dataset.index);
+            openEditModal(idx);
+        });
+
+        // Click en fila para seleccionar
+        tr.addEventListener("click", (e) => {
+            if (e.target.type === "checkbox") return;
+            const idx = parseInt(tr.dataset.index);
+            const isSelected = state.db.selectedRows.has(idx);
+            
+            if (isSelected) {
+                state.db.selectedRows.delete(idx);
+                tr.classList.remove("selected");
+                checkbox.checked = false;
+            } else {
+                state.db.selectedRows.add(idx);
+                tr.classList.add("selected");
+                checkbox.checked = true;
+            }
+            updateDbStats();
+            updateBulkEditButton();
+        });
+    });
+
+    // Actualizar paginación
+    document.getElementById("dbPageInfo").textContent = `Página ${state.db.currentPage} de ${totalPages}`;
+    document.getElementById("dbPrevPage").disabled = state.db.currentPage <= 1;
+    document.getElementById("dbNextPage").disabled = state.db.currentPage >= totalPages;
+
+    updateDbStats();
+    updateBulkEditButton();
+}
+
+function populateDbFilterOptions() {
+    // Solo poblar si hay datos y los selects están vacíos (excepto "Todos")
+    const tipoSelect = document.getElementById("filterDbTipo");
+    if (tipoSelect && tipoSelect.options.length <= 1) {
+        const tipos = [...new Set(state.rawData.map((r) => r.tipo))].filter(Boolean).sort();
+        tipos.forEach((t) => {
+            tipoSelect.innerHTML += `<option value="${t}">${t}</option>`;
+        });
+    }
+
+    const ccSelect = document.getElementById("filterDbCC");
+    if (ccSelect && ccSelect.options.length <= 1) {
+        const ccs = [...new Set(state.rawData.map((r) => r.cc))].filter(Boolean).sort();
+        ccs.forEach((c) => {
+            ccSelect.innerHTML += `<option value="${c}">${c}</option>`;
+        });
+    }
+
+    const itemSelect = document.getElementById("filterDbItem");
+    if (itemSelect && itemSelect.options.length <= 1) {
+        const items = [...new Set(state.rawData.map((r) => r.item))].filter(Boolean).sort();
+        items.forEach((i) => {
+            itemSelect.innerHTML += `<option value="${i}">${i}</option>`;
+        });
+    }
+
+    const catSelect = document.getElementById("filterDbCategoria");
+    if (catSelect && catSelect.options.length <= 1) {
+        const cats = [...new Set(state.rawData.map((r) => r.categoria))].filter(Boolean).sort();
+        cats.forEach((c) => {
+            catSelect.innerHTML += `<option value="${c}">${c}</option>`;
+        });
+    }
+}
+
+function truncateText(text, maxLength) {
+    if (!text) return "";
+    return text.length > maxLength ? text.substring(0, maxLength) + "..." : text;
+}
+
+function getTotalPages() {
+    const filtered = state.db.filteredData.length || state.rawData.length;
+    const pageSize = state.db.pageSize === "all" ? filtered : state.db.pageSize;
+    return Math.max(1, Math.ceil(filtered / pageSize));
+}
+
+function updateDbStats() {
+    document.getElementById("dbTotalRows").textContent = state.rawData.length;
+    document.getElementById("dbFilteredRows").textContent = state.db.filteredData.length || state.rawData.length;
+    document.getElementById("dbSelectedRows").textContent = state.db.selectedRows.size;
+}
+
+function openEditModal(index) {
+    const row = state.rawData[index];
+    if (!row) return;
+
+    document.getElementById("editIndex").value = index;
+
+    // Poblar selects con opciones únicas de los datos
+    populateSelect("editTipo", getUniqueValues("tipo"), row.tipo);
+    populateSelect("editCC", getUniqueValues("cc"), row.cc);
+    populateSelect("editItem", getUniqueValues("item"), row.item);
+    populateSelect("editCategoria", getUniqueValues("categoria"), row.categoria);
+
+    document.getElementById("editSubcategoria").value = row.subcategoria || "";
+    document.getElementById("editDetalle").value = row.detalle || "";
+    document.getElementById("editMonto").value = row.monto || 0;
+
+    // Fecha
+    if (row.fecha) {
+        const dateStr = row.fecha.toISOString().split("T")[0];
+        document.getElementById("editFecha").value = dateStr;
+    } else {
+        document.getElementById("editFecha").value = "";
+    }
+
+    document.getElementById("editModal").classList.add("active");
+}
+
+function closeModal() {
+    document.getElementById("editModal").classList.remove("active");
+}
+
+function populateSelect(selectId, options, selectedValue) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+
+    select.innerHTML = options.map((opt) => 
+        `<option value="${opt}" ${opt === selectedValue ? "selected" : ""}>${opt}</option>`
+    ).join("");
+}
+
+function getUniqueValues(field) {
+    return [...new Set(state.rawData.map((r) => r[field]).filter(Boolean))].sort();
+}
+
+function saveEditedRow() {
+    const index = parseInt(document.getElementById("editIndex").value);
+    if (isNaN(index) || !state.rawData[index]) return;
+
+    const row = state.rawData[index];
+
+    row.tipo = document.getElementById("editTipo").value;
+    row.cc = document.getElementById("editCC").value;
+    row.item = document.getElementById("editItem").value;
+    row.categoria = document.getElementById("editCategoria").value;
+    row.subcategoria = document.getElementById("editSubcategoria").value;
+    row.detalle = document.getElementById("editDetalle").value;
+    row.monto = parseFloat(document.getElementById("editMonto").value) || 0;
+
+    const fechaStr = document.getElementById("editFecha").value;
+    if (fechaStr) {
+        row.fecha = new Date(fechaStr);
+        row.year = row.fecha.getFullYear();
+        row.month = row.fecha.getMonth();
+    }
+
+    closeModal();
+    renderDatabaseTable();
+
+    // Actualizar otras vistas
+    applyFilters();
+    
+    // Guardar cambios en localStorage
+    saveToLocalStorage();
+}
+
+function exportToCSV() {
+    if (!state.rawData.length) {
+        alert("No hay datos para exportar");
+        return;
+    }
+
+    // Determinar qué datos exportar (seleccionados o todos los filtrados)
+    let dataToExport;
+    if (state.db.selectedRows.size > 0) {
+        dataToExport = state.rawData.filter((_, idx) => state.db.selectedRows.has(idx));
+    } else if (state.db.filteredData.length < state.rawData.length) {
+        dataToExport = state.db.filteredData;
+    } else {
+        dataToExport = state.rawData;
+    }
+
+    // Crear CSV
+    const headers = ["Tipo de movimiento", "Centro de costos", "Item", "Categoría", "Subcategoría", "Detalle", "Fecha", "Monto"];
+    const rows = dataToExport.map((row) => {
+        const fechaStr = row.fecha ? 
+            `${row.fecha.getDate().toString().padStart(2, "0")}/${(row.fecha.getMonth() + 1).toString().padStart(2, "0")}/${row.fecha.getFullYear()}` : 
+            "";
+        return [
+            row.tipo,
+            row.cc,
+            row.item,
+            row.categoria,
+            row.subcategoria,
+            row.detalle,
+            fechaStr,
+            row.monto
+        ].map((val) => `"${(val || "").toString().replace(/"/g, '""')}"`).join(";");
+    });
+
+    const csvContent = "\uFEFF" + headers.join(";") + "\n" + rows.join("\n");
+
+    // Descargar
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `CRAMSA_export_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+}
+
+// ===== EDICIÓN MASIVA =====
+function openBulkEditModal() {
+    if (state.db.selectedRows.size === 0) {
+        alert("Seleccione al menos un registro para editar");
+        return;
+    }
+
+    document.getElementById("bulkCount").textContent = state.db.selectedRows.size;
+
+    // Poblar selects con opciones únicas
+    populateSelect("bulkTipo", getUniqueValues("tipo"), "");
+    populateSelect("bulkCC", getUniqueValues("cc"), "");
+    populateSelect("bulkItem", getUniqueValues("item"), "");
+    populateSelect("bulkCategoria", getUniqueValues("categoria"), "");
+
+    // Reset checkboxes y campos
+    ["Tipo", "CC", "Item", "Categoria", "Subcategoria"].forEach((field) => {
+        const checkbox = document.getElementById(`bulkCheck${field}`);
+        const input = document.getElementById(`bulk${field}`);
+        if (checkbox) checkbox.checked = false;
+        if (input) {
+            input.disabled = true;
+            input.value = "";
+        }
+    });
+
+    document.getElementById("bulkEditModal").classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkEditModal").classList.remove("active");
+}
+
+function saveBulkEdit() {
+    const changes = {};
+    let hasChanges = false;
+
+    // Recoger campos marcados
+    if (document.getElementById("bulkCheckTipo")?.checked) {
+        changes.tipo = document.getElementById("bulkTipo").value;
+        hasChanges = true;
+    }
+    if (document.getElementById("bulkCheckCC")?.checked) {
+        changes.cc = document.getElementById("bulkCC").value;
+        hasChanges = true;
+    }
+    if (document.getElementById("bulkCheckItem")?.checked) {
+        changes.item = document.getElementById("bulkItem").value;
+        hasChanges = true;
+    }
+    if (document.getElementById("bulkCheckCategoria")?.checked) {
+        changes.categoria = document.getElementById("bulkCategoria").value;
+        hasChanges = true;
+    }
+    if (document.getElementById("bulkCheckSubcategoria")?.checked) {
+        changes.subcategoria = document.getElementById("bulkSubcategoria").value;
+        hasChanges = true;
+    }
+
+    if (!hasChanges) {
+        alert("Seleccione al menos un campo para modificar");
+        return;
+    }
+
+    // Aplicar cambios a los registros seleccionados
+    let count = 0;
+    state.db.selectedRows.forEach((idx) => {
+        const row = state.rawData[idx];
+        if (row) {
+            Object.assign(row, changes);
+            count++;
+        }
+    });
+
+    // Limpiar selección
+    state.db.selectedRows.clear();
+    document.getElementById("dbSelectAll").checked = false;
+
+    closeBulkModal();
+    
+    // Actualizar vistas
+    renderDatabaseTable();
+    applyFilters();
+    
+    // Guardar cambios en localStorage
+    saveToLocalStorage();
+
+    alert(`Se actualizaron ${count} registros correctamente.`);
 }

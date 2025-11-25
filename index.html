@@ -22,9 +22,9 @@
                 <img src="CRAMSA-C.png" alt="CRAMSA" class="logo-img">
             </div>
             <nav class="main-nav">
-                <button class="nav-tab active" data-view="resumen">Resumen de Movimientos</button>
+                <button class="nav-tab active" data-view="resumen">Resumen</button>
                 <button class="nav-tab" data-view="movimientos">Movimientos</button>
-                <button class="nav-tab" data-view="dashboard">Dashboard</button>
+                <button class="nav-tab" data-view="basedatos">Base de Datos</button>
             </nav>
             <div class="header-actions">
                 <label for="csvInput" class="hidden-input">Importar CSV</label>
@@ -63,8 +63,9 @@
         <!-- CONTENIDO PRINCIPAL -->
         <main class="main-content">
 
-            <!-- ========== VISTA: RESUMEN ========== -->
+            <!-- ========== VISTA: RESUMEN + DASHBOARD ========== -->
             <section class="view-section view-resumen active" id="viewResumen">
+                <!-- RESUMEN DE MOVIMIENTOS -->
                 <div class="summary-section">
                     <h2 class="section-title">RESUMEN DE MOVIMIENTOS</h2>
                     <div class="summary-table-wrapper">
@@ -77,6 +78,96 @@
                                 </tr>
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- DASHBOARD (KPIs y Gráficos) -->
+                <div class="dashboard-section">
+                    <!-- KPIs -->
+                    <div class="kpi-row">
+                        <div class="kpi-card">
+                            <div class="kpi-icon"><i class="fa-solid fa-vault"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Saldo Inicial</span>
+                                <span class="kpi-value" id="kpiSaldoInicial">$0</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card kpi-positive">
+                            <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Total Entradas</span>
+                                <span class="kpi-value" id="kpiEntradas">$0</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card kpi-negative">
+                            <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-down"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Total Salidas</span>
+                                <span class="kpi-value" id="kpiSalidas">$0</span>
+                            </div>
+                        </div>
+                        <div class="kpi-card kpi-highlight">
+                            <div class="kpi-icon"><i class="fa-solid fa-flag-checkered"></i></div>
+                            <div class="kpi-content">
+                                <span class="kpi-label">Saldo Final</span>
+                                <span class="kpi-value" id="kpiFinal">$0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- GRÁFICOS FILA 1 -->
+                    <div class="charts-row">
+                        <div class="chart-card chart-wide">
+                            <h3>Ingresos vs Egresos <span class="chart-badge" id="lineChartBadge">2025</span></h3>
+                            <canvas id="lineChart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Distribución de Ingresos</h3>
+                            <canvas id="donutChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- GRÁFICOS FILA 2 -->
+                    <div class="charts-row">
+                        <div class="chart-card chart-wide">
+                            <h3>Cascada - Flujo Operacional Mensual</h3>
+                            <canvas id="waterfallChart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Top Gastos por Categoría</h3>
+                            <canvas id="horizontalChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- PARETO -->
+                    <div class="pareto-section">
+                        <div class="pareto-header">
+                            <h3>Análisis de Pareto 80/20</h3>
+                            <div class="pareto-filters">
+                                <button class="pareto-btn" data-threshold="0.6">60%</button>
+                                <button class="pareto-btn" data-threshold="0.7">70%</button>
+                                <button class="pareto-btn active" data-threshold="0.8">80%</button>
+                                <button class="pareto-btn" data-threshold="0.9">90%</button>
+                            </div>
+                        </div>
+                        <div class="pareto-content">
+                            <div class="pareto-table-wrapper">
+                                <table class="pareto-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Rank</th>
+                                            <th>Categoría</th>
+                                            <th>Monto</th>
+                                            <th>% Acum.</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="paretoBody"></tbody>
+                                </table>
+                            </div>
+                            <div class="pareto-chart-wrapper">
+                                <canvas id="paretoChart"></canvas>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -135,102 +226,187 @@
                 </div>
             </section>
 
-            <!-- ========== VISTA: DASHBOARD ========== -->
-            <section class="view-section view-dashboard" id="viewDashboard">
-                <!-- KPIs -->
-                <div class="kpi-row">
-                    <div class="kpi-card">
-                        <div class="kpi-icon"><i class="fa-solid fa-vault"></i></div>
-                        <div class="kpi-content">
-                            <span class="kpi-label">Saldo Inicial</span>
-                            <span class="kpi-value" id="kpiSaldoInicial">$0</span>
+
+            <!-- ========== VISTA: BASE DE DATOS ========== -->
+            <section class="view-section view-basedatos" id="viewBasedatos">
+                <!-- Barra de herramientas -->
+                <div class="db-toolbar">
+                    <div class="db-toolbar-left">
+                        <div class="db-search">
+                            <i class="fa-solid fa-search"></i>
+                            <input type="text" id="dbSearch" placeholder="Buscar en todos los campos..." aria-label="Buscar">
+                        </div>
+                        <div class="db-stats">
+                            <span class="db-stat"><strong id="dbTotalRows">0</strong> total</span>
+                            <span class="db-stat"><strong id="dbFilteredRows">0</strong> filtrados</span>
+                            <span class="db-stat"><strong id="dbSelectedRows">0</strong> seleccionados</span>
                         </div>
                     </div>
-                    <div class="kpi-card kpi-positive">
-                        <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
-                        <div class="kpi-content">
-                            <span class="kpi-label">Total Entradas</span>
-                            <span class="kpi-value" id="kpiEntradas">$0</span>
-                        </div>
+                    <div class="db-toolbar-right">
+                        <button class="btn-bulk-edit" id="btnBulkEdit" disabled title="Editar seleccionados">
+                            <i class="fa-solid fa-pen-to-square"></i> Editar Masivo
+                        </button>
+                        <button class="btn-clear-filters" id="btnClearDbFilters" title="Limpiar filtros">
+                            <i class="fa-solid fa-filter-circle-xmark"></i> Limpiar Filtros
+                        </button>
+                        <button class="btn-export" id="btnExportCSV" title="Exportar datos">
+                            <i class="fa-solid fa-file-export"></i> Exportar CSV
+                        </button>
                     </div>
-                    <div class="kpi-card kpi-negative">
-                        <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-down"></i></div>
-                        <div class="kpi-content">
-                            <span class="kpi-label">Total Salidas</span>
-                            <span class="kpi-value" id="kpiSalidas">$0</span>
+                </div>
+
+                <!-- Tabla con filtros en cabecera -->
+                <div class="db-table-wrapper">
+                    <table class="db-table" id="dbTable">
+                        <thead>
+                            <tr class="db-header-row">
+                                <th class="col-check"><input type="checkbox" id="dbSelectAll" title="Seleccionar todos"></th>
+                                <th>Tipo</th>
+                                <th>Centro Costos</th>
+                                <th>Item</th>
+                                <th>Categoría</th>
+                                <th>Subcategoría</th>
+                                <th>Detalle</th>
+                                <th>Fecha</th>
+                                <th>Monto</th>
+                            </tr>
+                            <tr class="db-filter-row">
+                                <th></th>
+                                <th><select id="filterDbTipo" aria-label="Filtrar por tipo"><option value="">Todos</option></select></th>
+                                <th><select id="filterDbCC" aria-label="Filtrar por CC"><option value="">Todos</option></select></th>
+                                <th><select id="filterDbItem" aria-label="Filtrar por item"><option value="">Todos</option></select></th>
+                                <th><select id="filterDbCategoria" aria-label="Filtrar por categoría"><option value="">Todos</option></select></th>
+                                <th><input type="text" id="filterDbSubcat" placeholder="Filtrar..." aria-label="Filtrar subcategoría"></th>
+                                <th><input type="text" id="filterDbDetalle" placeholder="Filtrar..." aria-label="Filtrar detalle"></th>
+                                <th>
+                                    <div class="filter-date-range">
+                                        <input type="date" id="filterDbFechaDesde" aria-label="Fecha desde" title="Desde">
+                                        <input type="date" id="filterDbFechaHasta" aria-label="Fecha hasta" title="Hasta">
+                                    </div>
+                                </th>
+                                <th>
+                                    <div class="filter-monto-range">
+                                        <input type="number" id="filterDbMontoMin" placeholder="Min" aria-label="Monto mínimo">
+                                        <input type="number" id="filterDbMontoMax" placeholder="Max" aria-label="Monto máximo">
+                                    </div>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody id="dbBody">
+                            <tr>
+                                <td colspan="9" class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Paginación -->
+                <div class="db-pagination">
+                    <button class="btn-page" id="dbPrevPage" disabled title="Página anterior"><i class="fa-solid fa-chevron-left"></i></button>
+                    <span id="dbPageInfo">Página 1 de 1</span>
+                    <button class="btn-page" id="dbNextPage" disabled title="Página siguiente"><i class="fa-solid fa-chevron-right"></i></button>
+                    <select id="dbPageSize" aria-label="Registros por página">
+                        <option value="50" selected>50 por página</option>
+                        <option value="100">100 por página</option>
+                        <option value="200">200 por página</option>
+                        <option value="all">Todos</option>
+                    </select>
+                </div>
+
+                <!-- Modal para editar registro individual -->
+                <div class="modal-overlay" id="editModal">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h3>Editar Registro</h3>
+                            <button class="modal-close" id="modalClose" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
                         </div>
-                    </div>
-                    <div class="kpi-card kpi-highlight">
-                        <div class="kpi-icon"><i class="fa-solid fa-scale-balanced"></i></div>
-                        <div class="kpi-content">
-                            <span class="kpi-label">Saldo Operacional</span>
-                            <span class="kpi-value" id="kpiOperacional">$0</span>
+                        <div class="modal-body">
+                            <input type="hidden" id="editIndex">
+                            <div class="form-group">
+                                <label for="editTipo">Tipo de Movimiento</label>
+                                <select id="editTipo" title="Tipo de movimiento"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editCC">Centro de Costos</label>
+                                <select id="editCC" title="Centro de costos"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editItem">Item</label>
+                                <select id="editItem" title="Item"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editCategoria">Categoría</label>
+                                <select id="editCategoria" title="Categoría"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="editSubcategoria">Subcategoría</label>
+                                <input type="text" id="editSubcategoria" title="Subcategoría" placeholder="Subcategoría">
+                            </div>
+                            <div class="form-group">
+                                <label for="editDetalle">Detalle</label>
+                                <input type="text" id="editDetalle" title="Detalle" placeholder="Detalle">
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="editFecha">Fecha</label>
+                                    <input type="date" id="editFecha" title="Fecha">
+                                </div>
+                                <div class="form-group">
+                                    <label for="editMonto">Monto</label>
+                                    <input type="number" id="editMonto" step="1" title="Monto" placeholder="0">
+                                </div>
+                            </div>
                         </div>
-                    </div>
-                    <div class="kpi-card">
-                        <div class="kpi-icon"><i class="fa-solid fa-flag-checkered"></i></div>
-                        <div class="kpi-content">
-                            <span class="kpi-label">Saldo Final</span>
-                            <span class="kpi-value" id="kpiFinal">$0</span>
+                        <div class="modal-footer">
+                            <button class="btn-cancel" id="modalCancel">Cancelar</button>
+                            <button class="btn-save" id="modalSave">Guardar cambios</button>
                         </div>
                     </div>
                 </div>
 
-                <!-- GRÁFICOS FILA 1 -->
-                <div class="charts-row">
-                    <div class="chart-card chart-wide">
-                        <h3>Ingresos vs Egresos <span class="chart-badge" id="lineChartBadge">2025</span></h3>
-                        <canvas id="lineChart"></canvas>
-                    </div>
-                    <div class="chart-card">
-                        <h3>Distribución de Ingresos</h3>
-                        <canvas id="donutChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- GRÁFICOS FILA 2 -->
-                <div class="charts-row">
-                    <div class="chart-card chart-wide">
-                        <h3>Cascada - Flujo Operacional Mensual</h3>
-                        <canvas id="waterfallChart"></canvas>
-                    </div>
-                    <div class="chart-card">
-                        <h3>Top Gastos por Categoría</h3>
-                        <canvas id="horizontalChart"></canvas>
-                    </div>
-                </div>
-
-                <!-- PARETO -->
-                <div class="pareto-section">
-                    <div class="pareto-header">
-                        <h3>Análisis de Pareto 80/20</h3>
-                        <div class="pareto-filters">
-                            <button class="pareto-btn" data-threshold="0.6">60%</button>
-                            <button class="pareto-btn" data-threshold="0.7">70%</button>
-                            <button class="pareto-btn active" data-threshold="0.8">80%</button>
-                            <button class="pareto-btn" data-threshold="0.9">90%</button>
+                <!-- Modal para edición masiva -->
+                <div class="modal-overlay" id="bulkEditModal">
+                    <div class="modal-content modal-wide">
+                        <div class="modal-header">
+                            <h3><i class="fa-solid fa-pen-to-square"></i> Edición Masiva (<span id="bulkCount">0</span> registros)</h3>
+                            <button class="modal-close" id="bulkModalClose" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
                         </div>
-                    </div>
-                    <div class="pareto-content">
-                        <div class="pareto-table-wrapper">
-                            <table class="pareto-table">
-                                <thead>
-                                    <tr>
-                                        <th>Rank</th>
-                                        <th>Categoría</th>
-                                        <th>Monto</th>
-                                        <th>% Acum.</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="paretoBody"></tbody>
-                            </table>
+                        <div class="modal-body">
+                            <p class="bulk-info">Seleccione los campos que desea modificar. Solo los campos con valores serán actualizados.</p>
+                            <div class="bulk-form">
+                                <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckTipo" title="Modificar tipo">
+                                    <label for="bulkTipo">Tipo de Movimiento</label>
+                                    <select id="bulkTipo" disabled title="Seleccionar tipo"></select>
+                                </div>
+                                <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckCC" title="Modificar centro de costos">
+                                    <label for="bulkCC">Centro de Costos</label>
+                                    <select id="bulkCC" disabled title="Seleccionar centro de costos"></select>
+                                </div>
+                                <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckItem" title="Modificar item">
+                                    <label for="bulkItem">Item</label>
+                                    <select id="bulkItem" disabled title="Seleccionar item"></select>
+                                </div>
+                                <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckCategoria" title="Modificar categoría">
+                                    <label for="bulkCategoria">Categoría</label>
+                                    <select id="bulkCategoria" disabled title="Seleccionar categoría"></select>
+                                </div>
+                                <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckSubcategoria" title="Modificar subcategoría">
+                                    <label for="bulkSubcategoria">Subcategoría</label>
+                                    <input type="text" id="bulkSubcategoria" disabled placeholder="Nueva subcategoría" title="Ingresar subcategoría">
+                                </div>
+                            </div>
                         </div>
-                        <div class="pareto-chart-wrapper">
-                            <canvas id="paretoChart"></canvas>
+                        <div class="modal-footer">
+                            <button class="btn-cancel" id="bulkModalCancel">Cancelar</button>
+                            <button class="btn-save" id="bulkModalSave">Aplicar Cambios</button>
                         </div>
                     </div>
                 </div>
-
             </section>
 
         </main>
