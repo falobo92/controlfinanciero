@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flujo de Caja CRAMSA</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+</head>
+
+<body>
+    <div class="app-shell">
+        <!-- HEADER -->
+        <header class="main-header">
+            <div class="logo-section">
+                <img src="CRAMSA-C.png" alt="CRAMSA" class="logo-img">
+            </div>
+            <nav class="main-nav">
+                <button class="nav-tab active" data-view="resumen">Resumen de Movimientos</button>
+                <button class="nav-tab" data-view="movimientos">Movimientos</button>
+                <button class="nav-tab" data-view="dashboard">Dashboard</button>
+            </nav>
+            <div class="header-actions">
+                <label for="csvInput" class="hidden-input">Importar CSV</label>
+                <input type="file" id="csvInput" accept=".csv" class="hidden-input" title="Seleccionar archivo CSV">
+                <button class="btn-import" id="btnImport">
+                    <i class="fa-solid fa-file-import"></i> Importar CSV
+                </button>
+                <button class="btn-clear-data" id="btnClearData">
+                    <i class="fa-solid fa-trash-can"></i> Limpiar datos
+                </button>
+            </div>
+        </header>
+
+        <!-- FILTROS CENTROS DE COSTOS Y FECHAS -->
+        <section class="filters-bar">
+            <div class="cc-filters">
+                <span class="filter-label">Centro de Costos:</span>
+                <button class="cc-btn active" data-cc="all">Todos</button>
+            </div>
+            <div class="date-range-filters">
+                <span class="filter-label">Rango de fechas:</span>
+                <label>
+                    Desde
+                    <input type="month" id="dateFrom" aria-label="Fecha desde">
+                </label>
+                <label>
+                    Hasta
+                    <input type="month" id="dateTo" aria-label="Fecha hasta">
+                </label>
+                <button class="btn-clear-dates" id="btnClearDates" title="Limpiar fechas">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- CONTENIDO PRINCIPAL -->
+        <main class="main-content">
+
+            <!-- ========== VISTA: RESUMEN ========== -->
+            <section class="view-section view-resumen active" id="viewResumen">
+                <div class="summary-section">
+                    <h2 class="section-title">RESUMEN DE MOVIMIENTOS</h2>
+                    <div class="summary-table-wrapper">
+                        <table class="summary-table compact" id="summaryTable">
+                            <thead id="summaryHead">
+                            </thead>
+                            <tbody id="summaryBody">
+                                <tr>
+                                    <td class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== VISTA: MOVIMIENTOS ========== -->
+            <section class="view-section view-movimientos" id="viewMovimientos">
+                <div class="movements-section">
+                    <div class="movements-header">
+                        <h2 class="section-title">MOVIMIENTOS</h2>
+                        <div class="movements-controls">
+                            <div class="date-filters">
+                                <label>
+                                    Fecha (año)
+                                    <select id="filterYear" aria-label="Filtrar por año">
+                                        <option value="all">Todos</option>
+                                    </select>
+                                </label>
+                                <label>
+                                    Fecha (mes)
+                                    <select id="filterMonth" aria-label="Filtrar por mes">
+                                        <option value="all">Todos</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="group-controls">
+                                <span class="group-label">Niveles:</span>
+                                <label class="group-check">
+                                    <input type="checkbox" id="groupTipo" checked> Tipo
+                                </label>
+                                <label class="group-check">
+                                    <input type="checkbox" id="groupItem" checked> Item
+                                </label>
+                                <label class="group-check">
+                                    <input type="checkbox" id="groupCategoria" checked> Categoría
+                                </label>
+                            </div>
+                            <button class="btn-expand" id="btnExpandAll" title="Expandir todas las filas">
+                                <i class="fa-solid fa-expand"></i> Expandir
+                            </button>
+                            <button class="btn-collapse" id="btnCollapseAll" title="Colapsar todas las filas">
+                                <i class="fa-solid fa-compress"></i> Colapsar
+                            </button>
+                        </div>
+                    </div>
+                    <div class="movements-table-wrapper">
+                        <table class="movements-table compact" id="movementsTable">
+                            <thead id="movementsHead">
+                            </thead>
+                            <tbody id="movementsBody">
+                                <tr>
+                                    <td class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========== VISTA: DASHBOARD ========== -->
+            <section class="view-section view-dashboard" id="viewDashboard">
+                <!-- KPIs -->
+                <div class="kpi-row">
+                    <div class="kpi-card">
+                        <div class="kpi-icon"><i class="fa-solid fa-vault"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-label">Saldo Inicial</span>
+                            <span class="kpi-value" id="kpiSaldoInicial">$0</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-positive">
+                        <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-label">Total Entradas</span>
+                            <span class="kpi-value" id="kpiEntradas">$0</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-negative">
+                        <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-down"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-label">Total Salidas</span>
+                            <span class="kpi-value" id="kpiSalidas">$0</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card kpi-highlight">
+                        <div class="kpi-icon"><i class="fa-solid fa-scale-balanced"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-label">Saldo Operacional</span>
+                            <span class="kpi-value" id="kpiOperacional">$0</span>
+                        </div>
+                    </div>
+                    <div class="kpi-card">
+                        <div class="kpi-icon"><i class="fa-solid fa-flag-checkered"></i></div>
+                        <div class="kpi-content">
+                            <span class="kpi-label">Saldo Final</span>
+                            <span class="kpi-value" id="kpiFinal">$0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GRÁFICOS FILA 1 -->
+                <div class="charts-row">
+                    <div class="chart-card chart-wide">
+                        <h3>Ingresos vs Egresos <span class="chart-badge" id="lineChartBadge">2025</span></h3>
+                        <canvas id="lineChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Distribución de Ingresos</h3>
+                        <canvas id="donutChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- GRÁFICOS FILA 2 -->
+                <div class="charts-row">
+                    <div class="chart-card chart-wide">
+                        <h3>Cascada - Flujo Operacional Mensual</h3>
+                        <canvas id="waterfallChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Top Gastos por Categoría</h3>
+                        <canvas id="horizontalChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- PARETO -->
+                <div class="pareto-section">
+                    <div class="pareto-header">
+                        <h3>Análisis de Pareto 80/20</h3>
+                        <div class="pareto-filters">
+                            <button class="pareto-btn" data-threshold="0.6">60%</button>
+                            <button class="pareto-btn" data-threshold="0.7">70%</button>
+                            <button class="pareto-btn active" data-threshold="0.8">80%</button>
+                            <button class="pareto-btn" data-threshold="0.9">90%</button>
+                        </div>
+                    </div>
+                    <div class="pareto-content">
+                        <div class="pareto-table-wrapper">
+                            <table class="pareto-table">
+                                <thead>
+                                    <tr>
+                                        <th>Rank</th>
+                                        <th>Categoría</th>
+                                        <th>Monto</th>
+                                        <th>% Acum.</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="paretoBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="pareto-chart-wrapper">
+                            <canvas id="paretoChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
