@@ -25,6 +25,7 @@ const state = {
         pageSize: 50,
         selectedRows: new Set(),
         filteredData: [],
+        isEditMode: false, // Toggle para habilitar/deshabilitar edición de celdas
         // Filtros por columna
         filters: {
             tipo: "",
@@ -41,6 +42,12 @@ const state = {
     }
 };
 
+// Colores para gráficos
+const chartColors = {
+    ingresos: { border: "#00c853", bg: "rgba(0, 200, 83, 0.4)" },
+    egresos: { border: "#d32f2f", bg: "rgba(211, 47, 47, 0.4)" }
+};
+
 document.addEventListener("DOMContentLoaded", () => {
     setupNavTabs();
     setupCCFilters();
@@ -52,6 +59,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupParetoFilters();
     setupGroupCheckboxes();
     setupDatabaseControls();
+    // setupExportPDF(); // Desactivado
     
     // Intentar cargar datos guardados en localStorage
     loadFromLocalStorage();
@@ -152,10 +160,32 @@ function normalizeRow(row) {
     const tipo = row["Tipo de movimiento"]?.trim();
     if (!tipo) return null;
 
-    const serial = Number(row.Fecha);
-    if (!Number.isFinite(serial)) return null;
-    const fecha = excelSerialToDate(serial);
-    if (Number.isNaN(fecha.getTime())) return null;
+    // Intentar parsear la fecha en diferentes formatos
+    let fecha = null;
+    const fechaValue = row.Fecha;
+    
+    if (fechaValue) {
+        // Primero intentar como número serial de Excel
+        const serial = Number(fechaValue);
+        if (Number.isFinite(serial) && serial > 1000) {
+            fecha = excelSerialToDate(serial);
+        } else {
+            // Intentar como fecha en formato DD/MM/YYYY
+            const dateMatch = String(fechaValue).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+            if (dateMatch) {
+                const [, day, month, year] = dateMatch;
+                fecha = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
+            } else {
+                // Intentar como fecha ISO (YYYY-MM-DD)
+                const isoDate = new Date(fechaValue);
+                if (!isNaN(isoDate.getTime())) {
+                    fecha = isoDate;
+                }
+            }
+        }
+    }
+
+    if (!fecha || isNaN(fecha.getTime())) return null;
 
     const monto = Number(row.Monto) || 0;
 
@@ -168,8 +198,8 @@ function normalizeRow(row) {
         detalle: row["Detalle"]?.trim() || "",
         monto,
         fecha,
-        year: fecha.getUTCFullYear(),
-        month: fecha.getUTCMonth()
+        year: fecha.getFullYear(),
+        month: fecha.getMonth()
     };
 }
 
@@ -304,23 +334,34 @@ function setupImportCSV() {
         const file = e.target.files[0];
         if (!file) return;
 
+        // Intentar primero con UTF-8 (formato de exportación)
         Papa.parse(file, {
             header: true,
             delimiter: ";",
-            encoding: "ISO-8859-1",
+            encoding: "UTF-8",
             skipEmptyLines: true,
             complete: ({ data }) => {
-                // Resetear filtros de Base de Datos antes de cargar nuevos datos
-                resetDbFilters();
+                // Verificar si los datos se parsearon correctamente
+                const validData = data.filter(row => row["Tipo de movimiento"]?.trim());
                 
-                processData(data);
-                buildDynamicHeaders();
-                buildCCButtons();
-                
-                // Guardar en localStorage para persistencia
-                saveToLocalStorage();
-                
-                alert(`CSV importado: ${state.rawData.length} registros cargados.`);
+                if (validData.length === 0) {
+                    // Si no hay datos válidos con UTF-8, intentar con ISO-8859-1
+                    Papa.parse(file, {
+                        header: true,
+                        delimiter: ";",
+                        encoding: "ISO-8859-1",
+                        skipEmptyLines: true,
+                        complete: ({ data: dataISO }) => {
+                            processImportedData(dataISO);
+                        },
+                        error: (err) => {
+                            console.error("Error al importar CSV", err);
+                            alert("Error al importar el archivo CSV.");
+                        }
+                    });
+                } else {
+                    processImportedData(data);
+                }
             },
             error: (err) => {
                 console.error("Error al importar CSV", err);
@@ -330,6 +371,20 @@ function setupImportCSV() {
         // Reset input para permitir cargar el mismo archivo de nuevo
         csvInput.value = "";
     });
+}
+
+function processImportedData(data) {
+    // Resetear filtros de Base de Datos antes de cargar nuevos datos
+    resetDbFilters();
+    
+    processData(data);
+    buildDynamicHeaders();
+    buildCCButtons();
+    
+    // Guardar en localStorage para persistencia
+    saveToLocalStorage();
+    
+    alert(`CSV importado: ${state.rawData.length} registros cargados.`);
 }
 
 function setupClearData() {
@@ -386,6 +441,7 @@ function resetDbFilters() {
         pageSize: 50,
         selectedRows: new Set(),
         filteredData: [],
+        isEditMode: false,
         filters: {
             tipo: "",
             cc: "",
@@ -416,6 +472,10 @@ function resetDbFilters() {
     // Resetear checkbox de seleccionar todos
     const selectAll = document.getElementById("dbSelectAll");
     if (selectAll) selectAll.checked = false;
+
+    // Resetear botón de modo edición
+    const btnEditMode = document.getElementById("btnEditMode");
+    btnEditMode?.classList.remove("active");
 
     updateBulkEditButton();
 }
@@ -589,27 +649,25 @@ function renderSummaryTable() {
     if (!tbody) return;
 
     const columns = getColumns();
+    
+    // Datos
     const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
     const cargos = columns.map((col) => sumByType("02_Cargo", col.year, col.month));
     const saldosIniciales = columns.map((col) => sumByType("03_Saldos iniciales", col.year, col.month));
     const movInternos = columns.map((col) => sumByType("04_Movimiento Interno", col.year, col.month));
     
-    // Calcular saldo del mes (Ingresos + Cargos + Mov. Internos, SIN saldo inicial)
+    // Calcular saldo del mes
     const saldoMes = [];
-    // Calcular saldo acumulado (Saldo Inicial + suma de Saldos del Mes)
     const saldoAcumulado = [];
     
-    // Obtener el saldo inicial total (solo del primer mes que tenga saldo inicial)
     const saldoInicialTotal = saldosIniciales.reduce((acc, v) => acc + v, 0);
     let acumulado = saldoInicialTotal;
     
     for (let i = 0; i < columns.length; i++) {
         let saldoDelMes;
         if (state.currentCC === "all") {
-            // Vista TODOS: Ingresos + Cargos (sin mov. internos porque se cancelan)
             saldoDelMes = ingresos[i] + cargos[i];
         } else {
-            // Vista por CC específico: incluir movimientos internos
             saldoDelMes = ingresos[i] + cargos[i] + movInternos[i];
         }
         saldoMes.push(saldoDelMes);
@@ -628,7 +686,7 @@ function renderSummaryTable() {
     tbody.innerHTML = `
         <tr class="row-ingreso">
             <td>01_Ingreso</td>
-            ${ingresos.map((v) => `<td>${formatNumber(v)}</td>`).join("")}
+            ${ingresos.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
         </tr>
         <tr class="row-cargo">
             <td>02_Cargo</td>
@@ -636,7 +694,7 @@ function renderSummaryTable() {
         </tr>
         <tr class="row-saldo-inicial">
             <td>03_Saldo inicial</td>
-            ${saldosIniciales.map((v) => `<td>${formatNumber(v)}</td>`).join("")}
+            ${saldosIniciales.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
         </tr>
         ${movInternosRow}
         <tr class="row-saldo-mes">
@@ -933,6 +991,8 @@ function renderLineChart() {
     destroyChart("line");
 
     const columns = getColumns();
+    
+    // Datos
     const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
     const egresos = columns.map((col) => Math.abs(sumByType("02_Cargo", col.year, col.month)));
 
@@ -946,49 +1006,52 @@ function renderLineChart() {
     gradientRed.addColorStop(0, 'rgba(211, 47, 47, 0.4)');
     gradientRed.addColorStop(1, 'rgba(211, 47, 47, 0.02)');
 
+    const datasets = [
+        {
+            label: "Ingresos",
+            data: ingresos,
+            borderColor: "#00c853",
+            backgroundColor: gradientGreen,
+            fill: true,
+            tension: 0.4,
+            borderWidth: 3,
+            pointRadius: 4,
+            pointBackgroundColor: "#00c853",
+            pointBorderColor: "#fff",
+            pointBorderWidth: 2,
+            pointHoverRadius: 7,
+            pointHoverBackgroundColor: "#00c853",
+            pointHoverBorderColor: "#fff",
+            pointHoverBorderWidth: 3
+        },
+        {
+            label: "Egresos",
+            data: egresos,
+            borderColor: "#d32f2f",
+            backgroundColor: gradientRed,
+            fill: true,
+            tension: 0.4,
+            borderWidth: 3,
+            pointRadius: 4,
+            pointBackgroundColor: "#d32f2f",
+            pointBorderColor: "#fff",
+            pointBorderWidth: 2,
+            pointHoverRadius: 7,
+            pointHoverBackgroundColor: "#d32f2f",
+            pointHoverBorderColor: "#fff",
+            pointHoverBorderWidth: 3
+        }
+    ];
+
     state.charts.line = new Chart(ctx, {
         type: "line",
         data: {
             labels: columns.map((c) => `${monthLabels[c.month]} ${String(c.year).slice(-2)}`),
-            datasets: [
-                {
-                    label: "Ingresos",
-                    data: ingresos,
-                    borderColor: "#00c853",
-                    backgroundColor: gradientGreen,
-                    fill: true,
-                    tension: 0.4,
-                    borderWidth: 3,
-                    pointRadius: 4,
-                    pointBackgroundColor: "#00c853",
-                    pointBorderColor: "#fff",
-                    pointBorderWidth: 2,
-                    pointHoverRadius: 7,
-                    pointHoverBackgroundColor: "#00c853",
-                    pointHoverBorderColor: "#fff",
-                    pointHoverBorderWidth: 3
-                },
-                {
-                    label: "Egresos",
-                    data: egresos,
-                    borderColor: "#d32f2f",
-                    backgroundColor: gradientRed,
-                    fill: true,
-                    tension: 0.4,
-                    borderWidth: 3,
-                    pointRadius: 4,
-                    pointBackgroundColor: "#d32f2f",
-                    pointBorderColor: "#fff",
-                    pointBorderWidth: 2,
-                    pointHoverRadius: 7,
-                    pointHoverBackgroundColor: "#d32f2f",
-                    pointHoverBorderColor: "#fff",
-                    pointHoverBorderWidth: 3
-                }
-            ]
+            datasets
         },
         options: {
             responsive: true,
+            animation: false,
             interaction: {
                 intersect: false,
                 mode: 'index'
@@ -1017,6 +1080,7 @@ function renderLineChart() {
             scales: {
                 y: {
                     beginAtZero: true,
+                    stacked: false,
                     grid: { color: 'rgba(0,0,0,0.05)' },
                     ticks: { callback: (v) => formatAxis(v), font: { size: 11 } }
                 },
@@ -1061,6 +1125,7 @@ function renderDonutChart() {
         },
         options: {
             responsive: true,
+            animation: false,
             cutout: '60%',
             plugins: {
                 legend: {
@@ -1153,6 +1218,8 @@ function renderWaterfallChart() {
     destroyChart("waterfall");
 
     const columns = getColumns();
+    
+    // Flujo neto
     const netSeries = columns.map((col) => {
         const ing = sumByType("01_Ingreso", col.year, col.month);
         const egr = sumByType("02_Cargo", col.year, col.month);
@@ -1165,41 +1232,44 @@ function renderWaterfallChart() {
         return cumulative;
     });
 
+    const datasets = [
+        {
+            type: "line",
+            label: "Saldo Acumulado",
+            data: cumulativeData,
+            borderColor: "#0097a7",
+            backgroundColor: "rgba(0, 151, 167, 0.1)",
+            borderWidth: 4,
+            fill: false,
+            tension: 0.3,
+            order: 0,
+            pointRadius: 5,
+            pointBackgroundColor: "#0097a7",
+            pointBorderColor: "#fff",
+            pointBorderWidth: 2,
+            pointHoverRadius: 8,
+            pointHoverBorderWidth: 3
+        },
+        {
+            type: "bar",
+            label: "Flujo Mensual",
+            data: netSeries,
+            backgroundColor: netSeries.map((v) => v >= 0 ? "rgba(0, 200, 83, 0.85)" : "rgba(211, 47, 47, 0.85)"),
+            borderColor: netSeries.map((v) => v >= 0 ? "#00c853" : "#d32f2f"),
+            borderWidth: 2,
+            borderRadius: 6,
+            order: 1
+        }
+    ];
+
     state.charts.waterfall = new Chart(ctx, {
         data: {
             labels: columns.map((c) => `${monthLabels[c.month]} ${String(c.year).slice(-2)}`),
-            datasets: [
-                {
-                    type: "line",
-                    label: "Saldo Acumulado",
-                    data: cumulativeData,
-                    borderColor: "#0097a7",
-                    backgroundColor: "rgba(0, 151, 167, 0.1)",
-                    borderWidth: 4,
-                    fill: false,
-                    tension: 0.3,
-                    order: 0,
-                    pointRadius: 5,
-                    pointBackgroundColor: "#0097a7",
-                    pointBorderColor: "#fff",
-                    pointBorderWidth: 2,
-                    pointHoverRadius: 8,
-                    pointHoverBorderWidth: 3
-                },
-                {
-                    type: "bar",
-                    label: "Flujo Mensual",
-                    data: netSeries,
-                    backgroundColor: netSeries.map((v) => v >= 0 ? "rgba(0, 200, 83, 0.85)" : "rgba(211, 47, 47, 0.85)"),
-                    borderColor: netSeries.map((v) => v >= 0 ? "#00c853" : "#d32f2f"),
-                    borderWidth: 2,
-                    borderRadius: 6,
-                    order: 1
-                }
-            ]
+            datasets
         },
         options: {
             responsive: true,
+            animation: false,
             interaction: {
                 intersect: false,
                 mode: 'index'
@@ -1324,6 +1394,7 @@ function renderParetoSection() {
         },
         options: {
             responsive: true,
+            animation: false,
             interaction: {
                 intersect: false,
                 mode: 'index'
@@ -1537,6 +1608,12 @@ function setupDatabaseControls() {
     // Exportar CSV
     document.getElementById("btnExportCSV")?.addEventListener("click", exportToCSV);
 
+    // Botón modo edición
+    document.getElementById("btnEditMode")?.addEventListener("click", toggleEditMode);
+
+    // Nuevo registro
+    document.getElementById("btnNewRecord")?.addEventListener("click", openNewRecordModal);
+
     // Modal individual
     document.getElementById("modalClose")?.addEventListener("click", closeModal);
     document.getElementById("modalCancel")?.addEventListener("click", closeModal);
@@ -1570,6 +1647,22 @@ function setupBulkCheckboxes() {
             if (input) input.disabled = !checkbox.checked;
         });
     });
+}
+
+function toggleEditMode() {
+    state.db.isEditMode = !state.db.isEditMode;
+    const btn = document.getElementById("btnEditMode");
+    const table = document.getElementById("dbTable");
+    
+    if (state.db.isEditMode) {
+        btn?.classList.add("active");
+        table?.classList.remove("readonly-mode");
+        table?.classList.add("edit-mode");
+    } else {
+        btn?.classList.remove("active");
+        table?.classList.remove("edit-mode");
+        table?.classList.add("readonly-mode");
+    }
 }
 
 function clearDbFilters() {
@@ -1672,12 +1765,23 @@ function renderDatabaseTable() {
     const endIdx = startIdx + pageSize;
     const pageData = filtered.slice(startIdx, endIdx);
 
-    // Renderizar filas
+    // Aplicar clase de modo edición a la tabla
+    const table = document.getElementById("dbTable");
+    if (state.db.isEditMode) {
+        table?.classList.remove("readonly-mode");
+        table?.classList.add("edit-mode");
+    } else {
+        table?.classList.remove("edit-mode");
+        table?.classList.add("readonly-mode");
+    }
+
+    // Renderizar filas con celdas editables
     let html = "";
     pageData.forEach((row) => {
         const globalIdx = state.rawData.indexOf(row);
         const isSelected = state.db.selectedRows.has(globalIdx);
-        const fechaStr = row.fecha ? row.fecha.toLocaleDateString("es-CL") : "-";
+        const fechaStr = row.fecha ? row.fecha.toISOString().split("T")[0] : "";
+        const fechaDisplay = row.fecha ? row.fecha.toLocaleDateString("es-CL") : "-";
         const montoClass = row.monto < 0 ? "val-negative" : row.monto > 0 ? "val-positive" : "";
 
         html += `
@@ -1685,14 +1789,14 @@ function renderDatabaseTable() {
                 <td class="col-check">
                     <input type="checkbox" data-index="${globalIdx}" ${isSelected ? "checked" : ""}>
                 </td>
-                <td>${row.tipo || "-"}</td>
-                <td>${row.cc || "-"}</td>
-                <td>${row.item || "-"}</td>
-                <td>${row.categoria || "-"}</td>
-                <td>${row.subcategoria || "-"}</td>
-                <td title="${row.detalle || ""}">${truncateText(row.detalle, 30) || "-"}</td>
-                <td>${fechaStr}</td>
-                <td class="${montoClass}">${formatCurrency(row.monto)}</td>
+                <td data-editable="true" data-field="tipo" data-type="text">${row.tipo || "-"}</td>
+                <td data-editable="true" data-field="cc" data-type="text">${row.cc || "-"}</td>
+                <td data-editable="true" data-field="item" data-type="text">${row.item || "-"}</td>
+                <td data-editable="true" data-field="categoria" data-type="text">${row.categoria || "-"}</td>
+                <td data-editable="true" data-field="subcategoria" data-type="text">${row.subcategoria || "-"}</td>
+                <td data-editable="true" data-field="detalle" data-type="text" title="${row.detalle || ""}">${truncateText(row.detalle, 30) || "-"}</td>
+                <td data-editable="true" data-field="fecha" data-type="date" data-value="${fechaStr}">${fechaDisplay}</td>
+                <td data-editable="true" data-field="monto" data-type="number" class="${montoClass}">${formatCurrency(row.monto)}</td>
             </tr>
         `;
     });
@@ -1718,14 +1822,18 @@ function renderDatabaseTable() {
             updateBulkEditButton();
         });
 
-        // Doble click en fila para editar
-        tr.addEventListener("dblclick", () => {
-            const idx = parseInt(tr.dataset.index);
-            openEditModal(idx);
+        // Click en celda editable para edición inline (solo si modo edición está activo)
+        tr.querySelectorAll("td[data-editable='true']").forEach((td) => {
+            td.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (state.db.isEditMode) {
+                    startInlineEdit(td, tr);
+                }
+            });
         });
 
-        // Click en fila para seleccionar
-        tr.addEventListener("click", (e) => {
+        // Click en fila para seleccionar (solo en checkbox column)
+        tr.querySelector(".col-check")?.addEventListener("click", (e) => {
             if (e.target.type === "checkbox") return;
             const idx = parseInt(tr.dataset.index);
             const isSelected = state.db.selectedRows.has(idx);
@@ -1805,11 +1913,36 @@ function updateDbStats() {
     document.getElementById("dbSelectedRows").textContent = state.db.selectedRows.size;
 }
 
+function openNewRecordModal() {
+    document.getElementById("editIndex").value = -1;
+    document.getElementById("modalTitle").textContent = "Nuevo Registro";
+
+    // Poblar selects con opciones únicas de los datos o defaults
+    const defaultTipos = ["01_Ingreso", "02_Cargo", "03_Saldos iniciales", "04_Movimiento Interno"];
+    const tipos = state.rawData.length > 0 ? getUniqueValues("tipo") : defaultTipos;
+    const ccs = state.rawData.length > 0 ? getUniqueValues("cc") : ["CC Principal"];
+    const items = state.rawData.length > 0 ? getUniqueValues("item") : ["Item General"];
+    const categorias = state.rawData.length > 0 ? getUniqueValues("categoria") : ["Categoría General"];
+
+    populateSelect("editTipo", tipos, tipos[0]);
+    populateSelect("editCC", ccs, ccs[0]);
+    populateSelect("editItem", items, items[0]);
+    populateSelect("editCategoria", categorias, categorias[0]);
+
+    document.getElementById("editSubcategoria").value = "";
+    document.getElementById("editDetalle").value = "";
+    document.getElementById("editMonto").value = "";
+    document.getElementById("editFecha").value = new Date().toISOString().split("T")[0];
+
+    document.getElementById("editModal").classList.add("active");
+}
+
 function openEditModal(index) {
     const row = state.rawData[index];
     if (!row) return;
 
     document.getElementById("editIndex").value = index;
+    document.getElementById("modalTitle").textContent = "Editar Registro";
 
     // Poblar selects con opciones únicas de los datos
     populateSelect("editTipo", getUniqueValues("tipo"), row.tipo);
@@ -1851,9 +1984,16 @@ function getUniqueValues(field) {
 
 function saveEditedRow() {
     const index = parseInt(document.getElementById("editIndex").value);
-    if (isNaN(index) || !state.rawData[index]) return;
+    const isNewRecord = index === -1;
 
-    const row = state.rawData[index];
+    let row;
+    if (isNewRecord) {
+        // Crear nuevo registro
+        row = {};
+    } else {
+        if (!state.rawData[index]) return;
+        row = state.rawData[index];
+    }
 
     row.tipo = document.getElementById("editTipo").value;
     row.cc = document.getElementById("editCC").value;
@@ -1868,9 +2008,24 @@ function saveEditedRow() {
         row.fecha = new Date(fechaStr);
         row.year = row.fecha.getFullYear();
         row.month = row.fecha.getMonth();
+    } else {
+        row.fecha = null;
+        row.year = null;
+        row.month = null;
+    }
+
+    if (isNewRecord) {
+        // Agregar nuevo registro al array
+        state.rawData.push(row);
     }
 
     closeModal();
+    
+    // Actualizar opciones de filtro y reconstruir headers si es necesario
+    extractFilterOptions();
+    buildDynamicHeaders();
+    buildCCButtons();
+    
     renderDatabaseTable();
 
     // Actualizar otras vistas
@@ -1878,6 +2033,10 @@ function saveEditedRow() {
     
     // Guardar cambios en localStorage
     saveToLocalStorage();
+
+    if (isNewRecord) {
+        alert("Registro creado correctamente.");
+    }
 }
 
 function exportToCSV() {
@@ -2012,4 +2171,408 @@ function saveBulkEdit() {
     saveToLocalStorage();
 
     alert(`Se actualizaron ${count} registros correctamente.`);
+}
+
+// ===== EXPORTAR A PDF =====
+function setupExportPDF() {
+    const btnExport = document.getElementById("btnExportPDF");
+    btnExport?.addEventListener("click", exportToPDF);
+}
+
+async function exportToPDF() {
+    // Verificar que html2pdf esté disponible
+    if (typeof html2pdf === 'undefined') {
+        alert("Error: La librería de PDF no está cargada. Por favor, recarga la página e intenta de nuevo.");
+        console.error("html2pdf no está definido");
+        return;
+    }
+
+    // Verificar que hay datos
+    if (!state.filteredData || state.filteredData.length === 0) {
+        alert("No hay datos para exportar. Importe un archivo CSV primero.");
+        return;
+    }
+
+    // Mostrar loading
+    const loadingOverlay = document.createElement("div");
+    loadingOverlay.className = "pdf-loading-overlay";
+    loadingOverlay.innerHTML = `
+        <div class="pdf-loading-spinner"></div>
+        <div class="pdf-loading-text">Generando informe PDF</div>
+    `;
+    document.body.appendChild(loadingOverlay);
+
+    try {
+        // Calcular datos para el informe
+        const data = state.filteredData;
+        const saldoInicial = data.filter((r) => r.tipo === "03_Saldos iniciales").reduce((acc, r) => acc + r.monto, 0);
+        const totalIngresos = data.filter((r) => r.tipo === "01_Ingreso").reduce((acc, r) => acc + r.monto, 0);
+        const totalEgresos = data.filter((r) => r.tipo === "02_Cargo").reduce((acc, r) => acc + Math.abs(r.monto), 0);
+        const saldoFinal = saldoInicial + totalIngresos - totalEgresos;
+        const flujoNeto = totalIngresos - totalEgresos;
+        const ratio = totalEgresos > 0 ? (totalIngresos / totalEgresos).toFixed(2) : 'N/A';
+        const variacion = saldoInicial !== 0 ? (((saldoFinal - saldoInicial) / Math.abs(saldoInicial)) * 100).toFixed(1) + '%' : 'N/A';
+        
+        // Obtener top categorías de gastos
+        const gastosPorCategoria = {};
+        data.filter(r => r.tipo === "02_Cargo").forEach(r => {
+            const cat = r.categoria || "Sin categoría";
+            gastosPorCategoria[cat] = (gastosPorCategoria[cat] || 0) + Math.abs(r.monto);
+        });
+        const topGastos = Object.entries(gastosPorCategoria)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+
+        // Obtener top categorías de ingresos
+        const ingresosPorCategoria = {};
+        data.filter(r => r.tipo === "01_Ingreso").forEach(r => {
+            const cat = r.categoria || "Sin categoría";
+            ingresosPorCategoria[cat] = (ingresosPorCategoria[cat] || 0) + r.monto;
+        });
+        const topIngresos = Object.entries(ingresosPorCategoria)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5);
+
+        // Determinar período del reporte
+        const fechas = data.filter(r => r.fecha).map(r => r.fecha);
+        const fechaMin = fechas.length ? new Date(Math.min(...fechas)) : null;
+        const fechaMax = fechas.length ? new Date(Math.max(...fechas)) : null;
+        const periodoStr = fechaMin && fechaMax 
+            ? `${fechaMin.toLocaleDateString("es-CL", { month: "long", year: "numeric" })} - ${fechaMax.toLocaleDateString("es-CL", { month: "long", year: "numeric" })}`
+            : "Sin datos de período";
+
+        // Filtro activo
+        const filtroCC = state.currentCC === "all" ? "Todos los centros de costos" : state.currentCC;
+        const fechaGeneracion = new Date().toLocaleDateString("es-CL", { 
+            weekday: "long", year: "numeric", month: "long", day: "numeric" 
+        });
+        const horaGeneracion = new Date().toLocaleTimeString("es-CL");
+
+        // Crear el contenido HTML del informe usando TABLAS para compatibilidad
+        const reportHTML = `
+            <div style="font-family: Arial, sans-serif; padding: 40px; background: #fff; color: #333; font-size: 12px; line-height: 1.5; width: 700px;">
+                
+                <!-- ENCABEZADO -->
+                <table style="width: 100%; border-bottom: 3px solid #003978; padding-bottom: 15px; margin-bottom: 20px;">
+                    <tr>
+                        <td style="width: 150px; vertical-align: middle;">
+                            <div style="background: #003978; color: white; padding: 10px 15px; border-radius: 5px; font-weight: bold; font-size: 18px;">CRAMSA</div>
+                        </td>
+                        <td style="text-align: right; vertical-align: middle;">
+                            <div style="color: #003978; font-size: 22px; font-weight: bold; margin-bottom: 5px;">INFORME DE FLUJO DE CAJA</div>
+                            <div style="color: #666; font-size: 11px;">${fechaGeneracion}</div>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- INFORMACIÓN DEL REPORTE -->
+                <table style="width: 100%; background: #f5f7fa; border-left: 4px solid #003978; margin-bottom: 25px;">
+                    <tr>
+                        <td style="padding: 12px 15px;">
+                            <strong style="color: #003978;">Período:</strong> ${periodoStr} &nbsp;&nbsp;|&nbsp;&nbsp;
+                            <strong style="color: #003978;">Centro de Costos:</strong> ${filtroCC} &nbsp;&nbsp;|&nbsp;&nbsp;
+                            <strong style="color: #003978;">Registros:</strong> ${data.length}
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- RESUMEN EJECUTIVO -->
+                <div style="color: #003978; font-size: 16px; font-weight: bold; border-bottom: 2px solid #e0e6ed; padding-bottom: 8px; margin-bottom: 15px;">
+                    RESUMEN EJECUTIVO
+                </div>
+                
+                <table style="width: 100%; margin-bottom: 25px; border-collapse: separate; border-spacing: 10px 0;">
+                    <tr>
+                        <td style="width: 25%; background: #f5f5f5; border-left: 4px solid #616161; padding: 15px; text-align: center; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Saldo Inicial</div>
+                            <div style="font-size: 18px; font-weight: bold; color: #333;">${formatCurrency(saldoInicial)}</div>
+                        </td>
+                        <td style="width: 25%; background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 15px; text-align: center; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #2e7d32; text-transform: uppercase; margin-bottom: 5px;">Total Ingresos</div>
+                            <div style="font-size: 18px; font-weight: bold; color: #2e7d32;">${formatCurrency(totalIngresos)}</div>
+                        </td>
+                        <td style="width: 25%; background: #ffebee; border-left: 4px solid #c62828; padding: 15px; text-align: center; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #c62828; text-transform: uppercase; margin-bottom: 5px;">Total Egresos</div>
+                            <div style="font-size: 18px; font-weight: bold; color: #c62828;">${formatCurrency(-totalEgresos)}</div>
+                        </td>
+                        <td style="width: 25%; background: #e3f2fd; border-left: 4px solid #1565c0; padding: 15px; text-align: center; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #1565c0; text-transform: uppercase; margin-bottom: 5px;">Saldo Final</div>
+                            <div style="font-size: 18px; font-weight: bold; color: ${saldoFinal >= 0 ? '#1565c0' : '#c62828'};">${formatCurrency(saldoFinal)}</div>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- ANÁLISIS DE FLUJO -->
+                <table style="width: 100%; margin-bottom: 25px;">
+                    <tr>
+                        <td style="width: 48%; vertical-align: top; padding-right: 15px;">
+                            <div style="color: #2e7d32; font-size: 14px; font-weight: bold; margin-bottom: 10px; padding: 5px 10px; background: #e8f5e9; border-radius: 4px;">
+                                ▲ Principales Ingresos
+                            </div>
+                            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+                                <tr style="background: #f5f5f5;">
+                                    <th style="padding: 8px; text-align: left; border-bottom: 2px solid #2e7d32;">Categoría</th>
+                                    <th style="padding: 8px; text-align: right; border-bottom: 2px solid #2e7d32;">Monto</th>
+                                </tr>
+                                ${topIngresos.length > 0 ? topIngresos.map((item, idx) => `
+                                    <tr style="background: ${idx % 2 === 0 ? '#fff' : '#fafafa'};">
+                                        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item[0]}</td>
+                                        <td style="padding: 8px; text-align: right; border-bottom: 1px solid #eee; color: #2e7d32; font-weight: bold;">${formatCurrency(item[1])}</td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="2" style="padding: 15px; text-align: center; color: #999;">Sin datos</td></tr>'}
+                            </table>
+                        </td>
+                        <td style="width: 48%; vertical-align: top; padding-left: 15px;">
+                            <div style="color: #c62828; font-size: 14px; font-weight: bold; margin-bottom: 10px; padding: 5px 10px; background: #ffebee; border-radius: 4px;">
+                                ▼ Principales Gastos
+                            </div>
+                            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+                                <tr style="background: #f5f5f5;">
+                                    <th style="padding: 8px; text-align: left; border-bottom: 2px solid #c62828;">Categoría</th>
+                                    <th style="padding: 8px; text-align: right; border-bottom: 2px solid #c62828;">Monto</th>
+                                </tr>
+                                ${topGastos.length > 0 ? topGastos.map((item, idx) => `
+                                    <tr style="background: ${idx % 2 === 0 ? '#fff' : '#fafafa'};">
+                                        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item[0]}</td>
+                                        <td style="padding: 8px; text-align: right; border-bottom: 1px solid #eee; color: #c62828; font-weight: bold;">${formatCurrency(-item[1])}</td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="2" style="padding: 15px; text-align: center; color: #999;">Sin datos</td></tr>'}
+                            </table>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- INDICADORES CLAVE -->
+                <div style="color: #003978; font-size: 16px; font-weight: bold; border-bottom: 2px solid #e0e6ed; padding-bottom: 8px; margin-bottom: 15px;">
+                    INDICADORES CLAVE
+                </div>
+                
+                <table style="width: 100%; margin-bottom: 25px; border-collapse: separate; border-spacing: 10px 0;">
+                    <tr>
+                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Flujo Neto</div>
+                            <div style="font-size: 20px; font-weight: bold; color: ${flujoNeto >= 0 ? '#2e7d32' : '#c62828'};">${formatCurrency(flujoNeto)}</div>
+                            <div style="font-size: 9px; color: #666; margin-top: 5px;">Ingresos - Egresos</div>
+                        </td>
+                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Ratio I/E</div>
+                            <div style="font-size: 20px; font-weight: bold; color: #003978;">${ratio}</div>
+                            <div style="font-size: 9px; color: #666; margin-top: 5px;">${ratio !== 'N/A' && parseFloat(ratio) >= 1 ? 'Positivo' : 'Requiere atención'}</div>
+                        </td>
+                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
+                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Variación</div>
+                            <div style="font-size: 20px; font-weight: bold; color: ${saldoFinal >= saldoInicial ? '#2e7d32' : '#c62828'};">${variacion}</div>
+                            <div style="font-size: 9px; color: #666; margin-top: 5px;">vs Saldo Inicial</div>
+                        </td>
+                    </tr>
+                </table>
+
+                <!-- PIE DE PÁGINA -->
+                <table style="width: 100%; border-top: 1px solid #e0e6ed; margin-top: 30px; padding-top: 15px;">
+                    <tr>
+                        <td style="color: #999; font-size: 10px;">CRAMSA - Control Financiero</td>
+                        <td style="color: #999; font-size: 10px; text-align: center;">Generado: ${horaGeneracion}</td>
+                        <td style="color: #999; font-size: 10px; text-align: right;">Página 1 de 1</td>
+                    </tr>
+                </table>
+            </div>
+        `;
+
+        // Crear contenedor temporal
+        const tempContainer = document.createElement("div");
+        tempContainer.style.position = "absolute";
+        tempContainer.style.left = "-9999px";
+        tempContainer.style.top = "0";
+        tempContainer.innerHTML = reportHTML;
+        document.body.appendChild(tempContainer);
+
+        // Esperar un momento para que el DOM se actualice
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Obtener el elemento a convertir (el div interno con el contenido)
+        const elementToConvert = tempContainer.querySelector('div');
+        if (!elementToConvert) {
+            throw new Error("No se pudo encontrar el elemento para convertir a PDF");
+        }
+
+        // Configuración de html2pdf - Tamaño Carta
+        const opt = {
+            margin: [10, 10, 10, 10],
+            filename: `CRAMSA_Informe_${new Date().toISOString().slice(0, 10)}.pdf`,
+            image: { type: "jpeg", quality: 0.98 },
+            html2canvas: { 
+                scale: 2,
+                logging: false,
+                useCORS: true
+            },
+            jsPDF: { 
+                unit: "mm", 
+                format: "letter",
+                orientation: "portrait" 
+            }
+        };
+
+        // Generar PDF
+        await html2pdf().set(opt).from(elementToConvert).save();
+
+        // Limpiar
+        document.body.removeChild(tempContainer);
+    } catch (error) {
+        console.error("Error al generar PDF:", error);
+        let errorMsg = "Error al generar el PDF.";
+        if (error.message) {
+            errorMsg += " Detalles: " + error.message;
+        }
+        if (error.name === "SecurityError") {
+            errorMsg = "Error de seguridad al generar el PDF. Verifica que el navegador permite la generación de archivos.";
+        }
+        alert(errorMsg);
+    } finally {
+        // Remover loading
+        if (loadingOverlay && loadingOverlay.parentNode) {
+            document.body.removeChild(loadingOverlay);
+        }
+        // Limpiar contenedor temporal si existe
+        const tempContainer = document.querySelector('[style*="left: -9999px"]');
+        if (tempContainer && tempContainer.parentNode) {
+            document.body.removeChild(tempContainer);
+        }
+    }
+}
+
+// ===== NUEVO REGISTRO =====
+function openNewRecordModal() {
+    document.getElementById("editIndex").value = "-1"; // -1 indica nuevo registro
+    document.getElementById("modalTitle").textContent = "Nuevo Registro";
+
+    // Poblar selects con opciones únicas de los datos (o valores por defecto)
+    const tipos = getUniqueValues("tipo");
+    const ccs = getUniqueValues("cc");
+    const items = getUniqueValues("item");
+    const categorias = getUniqueValues("categoria");
+
+    populateSelect("editTipo", tipos.length ? tipos : ["01_Ingreso", "02_Cargo", "03_Saldos iniciales", "04_Movimiento Interno"], "");
+    populateSelect("editCC", ccs.length ? ccs : [""], "");
+    populateSelect("editItem", items.length ? items : [""], "");
+    populateSelect("editCategoria", categorias.length ? categorias : [""], "");
+
+    document.getElementById("editSubcategoria").value = "";
+    document.getElementById("editDetalle").value = "";
+    document.getElementById("editMonto").value = 0;
+    document.getElementById("editFecha").value = new Date().toISOString().split("T")[0];
+
+    document.getElementById("editModal").classList.add("active");
+}
+
+// ===== EDICIÓN INLINE =====
+function startInlineEdit(td, tr) {
+    // Si ya está en modo edición, no hacer nada
+    if (td.classList.contains("editing")) return;
+
+    const field = td.dataset.field;
+    const type = td.dataset.type;
+    const idx = parseInt(tr.dataset.index);
+    const row = state.rawData[idx];
+    if (!row) return;
+
+    // Obtener valor actual
+    let currentValue;
+    if (field === "fecha") {
+        currentValue = td.dataset.value || "";
+    } else if (field === "monto") {
+        currentValue = row.monto || 0;
+    } else {
+        currentValue = row[field] || "";
+        if (currentValue === "-") currentValue = "";
+    }
+
+    // Guardar contenido original
+    const originalContent = td.innerHTML;
+
+    // Crear input según el tipo
+    let input;
+    if (type === "date") {
+        input = document.createElement("input");
+        input.type = "date";
+        input.value = currentValue;
+    } else if (type === "number") {
+        input = document.createElement("input");
+        input.type = "number";
+        input.step = "1";
+        input.value = currentValue;
+    } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.value = currentValue;
+    }
+
+    td.innerHTML = "";
+    td.classList.add("editing");
+    td.appendChild(input);
+    input.focus();
+    input.select();
+
+    // Función para guardar cambios
+    const saveInlineEdit = () => {
+        const newValue = input.value;
+        td.classList.remove("editing");
+
+        // Actualizar el valor en state.rawData
+        if (field === "fecha") {
+            if (newValue) {
+                row.fecha = new Date(newValue);
+                row.year = row.fecha.getFullYear();
+                row.month = row.fecha.getMonth();
+                td.dataset.value = newValue;
+                td.innerHTML = row.fecha.toLocaleDateString("es-CL");
+            } else {
+                row.fecha = null;
+                row.year = null;
+                row.month = null;
+                td.dataset.value = "";
+                td.innerHTML = "-";
+            }
+        } else if (field === "monto") {
+            row.monto = parseFloat(newValue) || 0;
+            td.innerHTML = formatCurrency(row.monto);
+            td.className = "";
+            td.dataset.editable = "true";
+            td.dataset.field = "monto";
+            td.dataset.type = "number";
+            if (row.monto < 0) td.classList.add("val-negative");
+            else if (row.monto > 0) td.classList.add("val-positive");
+        } else {
+            row[field] = newValue || "";
+            if (field === "detalle") {
+                td.innerHTML = truncateText(newValue, 30) || "-";
+                td.title = newValue || "";
+            } else {
+                td.innerHTML = newValue || "-";
+            }
+        }
+
+        // Guardar en localStorage y actualizar filtros
+        saveToLocalStorage();
+        extractFilterOptions();
+        applyFilters();
+    };
+
+    // Cancelar edición
+    const cancelInlineEdit = () => {
+        td.classList.remove("editing");
+        td.innerHTML = originalContent;
+    };
+
+    // Event listeners
+    input.addEventListener("blur", saveInlineEdit);
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            input.blur();
+        } else if (e.key === "Escape") {
+            e.preventDefault();
+            input.removeEventListener("blur", saveInlineEdit);
+            cancelInlineEdit();
+        }
+    });
 }

@@ -11,6 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
 </head>
 
@@ -31,6 +32,9 @@
                 <input type="file" id="csvInput" accept=".csv" class="hidden-input" title="Seleccionar archivo CSV">
                 <button class="btn-import" id="btnImport">
                     <i class="fa-solid fa-file-import"></i> Importar CSV
+                </button>
+                <button class="btn-export-pdf" id="btnExportPDF" disabled>
+                    <i class="fa-solid fa-file-pdf"></i> Exportar PDF
                 </button>
                 <button class="btn-clear-data" id="btnClearData">
                     <i class="fa-solid fa-trash-can"></i> Limpiar datos
@@ -243,6 +247,13 @@
                         </div>
                     </div>
                     <div class="db-toolbar-right">
+                        <button class="btn-edit-mode" id="btnEditMode" title="Habilitar/Deshabilitar edición de celdas">
+                            <span class="status-dot"></span>
+                            <i class="fa-solid fa-pencil"></i> Modo Edición
+                        </button>
+                        <button class="btn-new-record" id="btnNewRecord" title="Nuevo registro">
+                            <i class="fa-solid fa-plus"></i> Nuevo Registro
+                        </button>
                         <button class="btn-bulk-edit" id="btnBulkEdit" disabled title="Editar seleccionados">
                             <i class="fa-solid fa-pen-to-square"></i> Editar Masivo
                         </button>
@@ -313,53 +324,53 @@
                     </select>
                 </div>
 
-                <!-- Modal para editar registro individual -->
+                <!-- Modal para nuevo/editar registro individual -->
                 <div class="modal-overlay" id="editModal">
-                    <div class="modal-content">
+                    <div class="modal-content modal-wide">
                         <div class="modal-header">
-                            <h3>Editar Registro</h3>
+                            <h3 id="modalTitle"><i class="fa-solid fa-file-pen"></i> Editar Registro</h3>
                             <button class="modal-close" id="modalClose" title="Cerrar"><i class="fa-solid fa-xmark"></i></button>
                         </div>
                         <div class="modal-body">
                             <input type="hidden" id="editIndex">
-                            <div class="form-group">
-                                <label for="editTipo">Tipo de Movimiento</label>
-                                <select id="editTipo" title="Tipo de movimiento"></select>
-                            </div>
-                            <div class="form-group">
-                                <label for="editCC">Centro de Costos</label>
-                                <select id="editCC" title="Centro de costos"></select>
-                            </div>
-                            <div class="form-group">
-                                <label for="editItem">Item</label>
-                                <select id="editItem" title="Item"></select>
-                            </div>
-                            <div class="form-group">
-                                <label for="editCategoria">Categoría</label>
-                                <select id="editCategoria" title="Categoría"></select>
-                            </div>
-                            <div class="form-group">
-                                <label for="editSubcategoria">Subcategoría</label>
-                                <input type="text" id="editSubcategoria" title="Subcategoría" placeholder="Subcategoría">
-                            </div>
-                            <div class="form-group">
-                                <label for="editDetalle">Detalle</label>
-                                <input type="text" id="editDetalle" title="Detalle" placeholder="Detalle">
-                            </div>
-                            <div class="form-row">
+                            <div class="modal-form-grid">
+                                <div class="form-group">
+                                    <label for="editTipo">Tipo de Movimiento</label>
+                                    <select id="editTipo" title="Tipo de movimiento"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editCC">Centro de Costos</label>
+                                    <select id="editCC" title="Centro de costos"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editItem">Item</label>
+                                    <select id="editItem" title="Item"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editCategoria">Categoría</label>
+                                    <select id="editCategoria" title="Categoría"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editSubcategoria">Subcategoría</label>
+                                    <input type="text" id="editSubcategoria" title="Subcategoría" placeholder="Ingrese subcategoría">
+                                </div>
                                 <div class="form-group">
                                     <label for="editFecha">Fecha</label>
                                     <input type="date" id="editFecha" title="Fecha">
                                 </div>
+                                <div class="form-group full-width">
+                                    <label for="editDetalle">Detalle</label>
+                                    <input type="text" id="editDetalle" title="Detalle" placeholder="Descripción del movimiento">
+                                </div>
                                 <div class="form-group">
-                                    <label for="editMonto">Monto</label>
+                                    <label for="editMonto">Monto ($)</label>
                                     <input type="number" id="editMonto" step="1" title="Monto" placeholder="0">
                                 </div>
                             </div>
                         </div>
                         <div class="modal-footer">
                             <button class="btn-cancel" id="modalCancel">Cancelar</button>
-                            <button class="btn-save" id="modalSave">Guardar cambios</button>
+                            <button class="btn-save" id="modalSave"><i class="fa-solid fa-check"></i> Guardar</button>
                         </div>
                     </div>
                 </div>
