@@ -4,15 +4,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flujo de Caja CRAMSA</title>
+    <title>Control Financiero - Flujo de Caja</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
+    <!-- noUiSlider para el range picker -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
 </head>
 
 <body>
@@ -21,6 +24,7 @@
         <header class="main-header">
             <div class="logo-section">
                 <img src="CRAMSA-C.png" alt="CRAMSA" class="logo-img">
+                <span class="logo-text">Control Financiero</span>
             </div>
             <nav class="main-nav">
                 <button class="nav-tab active" data-view="resumen">Resumen</button>
@@ -31,34 +35,47 @@
                 <label for="csvInput" class="hidden-input">Importar CSV</label>
                 <input type="file" id="csvInput" accept=".csv" class="hidden-input" title="Seleccionar archivo CSV">
                 <button class="btn-import" id="btnImport">
-                    <i class="fa-solid fa-file-import"></i> Importar CSV
-                </button>
-                <button class="btn-export-pdf" id="btnExportPDF" disabled>
-                    <i class="fa-solid fa-file-pdf"></i> Exportar PDF
+                    <i class="fa-solid fa-file-import"></i> Importar
                 </button>
                 <button class="btn-clear-data" id="btnClearData">
-                    <i class="fa-solid fa-trash-can"></i> Limpiar datos
+                    <i class="fa-solid fa-trash-can"></i> Limpiar
                 </button>
             </div>
         </header>
 
-        <!-- FILTROS CENTROS DE COSTOS Y FECHAS -->
+        <!-- FILTROS EMPRESAS Y FECHAS -->
         <section class="filters-bar">
-            <div class="cc-filters">
-                <span class="filter-label">Centro de Costos:</span>
-                <button class="cc-btn active" data-cc="all">Todos</button>
+            <div class="empresa-filters">
+                <span class="filter-label">Empresa:</span>
+                <button class="empresa-btn active" data-empresa="all">Consolidado</button>
+            </div>
+            <div class="mes-actual-filter">
+                <span class="filter-label">Mes actual:</span>
+                <div class="month-picker-container">
+                    <button class="month-picker-btn" id="monthPickerBtn" type="button">
+                        <span class="month-picker-value" id="monthPickerValue">Seleccionar</span>
+                        <i class="fa-solid fa-calendar-days"></i>
+                    </button>
+                    <div class="month-picker-dropdown" id="monthPickerDropdown">
+                        <div class="month-picker-header">
+                            <button class="month-picker-nav" id="monthPickerPrevYear" type="button"><i class="fa-solid fa-chevron-left"></i></button>
+                            <span class="month-picker-year" id="monthPickerYear">2025</span>
+                            <button class="month-picker-nav" id="monthPickerNextYear" type="button"><i class="fa-solid fa-chevron-right"></i></button>
+                        </div>
+                        <div class="month-picker-grid" id="monthPickerGrid">
+                            <!-- Meses se generan dinámicamente -->
+                        </div>
+                    </div>
+                </div>
+                <span class="mes-actual-info" id="mesActualInfo"></span>
             </div>
             <div class="date-range-filters">
-                <span class="filter-label">Rango de fechas:</span>
-                <label>
-                    Desde
-                    <input type="month" id="dateFrom" aria-label="Fecha desde">
-                </label>
-                <label>
-                    Hasta
-                    <input type="month" id="dateTo" aria-label="Fecha hasta">
-                </label>
-                <button class="btn-clear-dates" id="btnClearDates" title="Limpiar fechas">
+                <span class="filter-label">Rango:</span>
+                <div class="range-slider-wrapper">
+                    <div id="mesRangeSlider" class="mes-range-slider"></div>
+                    <span class="range-months-count" id="rangeMonthsCount">0 meses</span>
+                </div>
+                <button class="btn-clear-dates" id="btnClearDates" title="Resetear rango">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -71,71 +88,72 @@
             <section class="view-section view-resumen active" id="viewResumen">
                 <!-- RESUMEN DE MOVIMIENTOS -->
                 <div class="summary-section">
-                    <h2 class="section-title">RESUMEN DE MOVIMIENTOS</h2>
+                    <h2 class="section-title">RESUMEN DE FLUJO DE CAJA <span class="date-range-badge" id="summaryDateRange"></span></h2>
+                    <div class="summary-highlights">
+                        <div class="kpi-mode-toggle">
+                            <span class="toggle-label">Datos KPI:</span>
+                            <label class="toggle-switch">
+                                <input type="checkbox" id="kpiModeToggle" checked>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="toggle-text" id="kpiModeText">Inicio → Mes actual</span>
+                        </div>
+                        <div class="kpi-grid">
+                            <article class="kpi-card kpi-positive">
+                                <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
+                                <span class="kpi-label">Ingresos acumulados</span>
+                                <strong class="kpi-value" id="kpiIngresosValue">-</strong>
+                                <small class="kpi-sub" id="kpiIngresosSub">Prom. mensual —</small>
+                            </article>
+                            <article class="kpi-card kpi-negative">
+                                <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-down"></i></div>
+                                <span class="kpi-label">Egresos acumulados</span>
+                                <strong class="kpi-value" id="kpiEgresosValue">-</strong>
+                                <small class="kpi-sub" id="kpiEgresosSub">Prom. mensual —</small>
+                            </article>
+                            <article class="kpi-card kpi-flow">
+                                <div class="kpi-icon"><i class="fa-solid fa-scale-balanced"></i></div>
+                                <span class="kpi-label">Flujo neto acumulado</span>
+                                <strong class="kpi-value" id="kpiNetoValue">-</strong>
+                                <small class="kpi-sub" id="kpiNetoSub">Cobertura —</small>
+                            </article>
+                            <article class="kpi-card kpi-balance">
+                                <div class="kpi-icon"><i class="fa-solid fa-wallet"></i></div>
+                                <span class="kpi-label">Saldo actual</span>
+                                <strong class="kpi-value" id="kpiSaldoValue">-</strong>
+                                <small class="kpi-sub" id="kpiSaldoSub">Saldo inicial —</small>
+                            </article>
+                            <article class="kpi-card kpi-neutral">
+                                <div class="kpi-icon"><i class="fa-solid fa-calendar-check"></i></div>
+                                <span class="kpi-label">Meses analizados</span>
+                                <strong class="kpi-value" id="kpiMesesValue">-</strong>
+                                <small class="kpi-sub" id="kpiMesesSub">Reales vs. proyectados</small>
+                            </article>
+                        </div>
+                    </div>
                     <div class="summary-table-wrapper">
                         <table class="summary-table compact" id="summaryTable">
                             <thead id="summaryHead">
                             </thead>
                             <tbody id="summaryBody">
                                 <tr>
-                                    <td class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                                    <td class="empty-message">Importe el archivo CSV para visualizar los datos</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <!-- DASHBOARD (KPIs y Gráficos) -->
+                <!-- DASHBOARD (Gráficos) -->
                 <div class="dashboard-section">
-                    <!-- KPIs -->
-                    <div class="kpi-row">
-                        <div class="kpi-card">
-                            <div class="kpi-icon"><i class="fa-solid fa-vault"></i></div>
-                            <div class="kpi-content">
-                                <span class="kpi-label">Saldo Inicial</span>
-                                <span class="kpi-value" id="kpiSaldoInicial">$0</span>
-                            </div>
-                        </div>
-                        <div class="kpi-card kpi-positive">
-                            <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-up"></i></div>
-                            <div class="kpi-content">
-                                <span class="kpi-label">Total Entradas</span>
-                                <span class="kpi-value" id="kpiEntradas">$0</span>
-                            </div>
-                        </div>
-                        <div class="kpi-card kpi-negative">
-                            <div class="kpi-icon"><i class="fa-solid fa-arrow-trend-down"></i></div>
-                            <div class="kpi-content">
-                                <span class="kpi-label">Total Salidas</span>
-                                <span class="kpi-value" id="kpiSalidas">$0</span>
-                            </div>
-                        </div>
-                        <div class="kpi-card kpi-highlight">
-                            <div class="kpi-icon"><i class="fa-solid fa-flag-checkered"></i></div>
-                            <div class="kpi-content">
-                                <span class="kpi-label">Saldo Final</span>
-                                <span class="kpi-value" id="kpiFinal">$0</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- GRÁFICOS FILA 1 -->
-                    <div class="charts-row">
-                        <div class="chart-card chart-wide">
-                            <h3>Ingresos vs Egresos <span class="chart-badge" id="lineChartBadge">2025</span></h3>
+                    <div class="dashboard-grid">
+                        <div class="chart-card chart-full">
+                            <h3>Ingresos vs Egresos <span class="chart-badge" id="lineChartBadge">2025-2026</span></h3>
                             <canvas id="lineChart"></canvas>
                         </div>
                         <div class="chart-card">
                             <h3>Distribución de Ingresos</h3>
                             <canvas id="donutChart"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- GRÁFICOS FILA 2 -->
-                    <div class="charts-row">
-                        <div class="chart-card chart-wide">
-                            <h3>Cascada - Flujo Operacional Mensual</h3>
-                            <canvas id="waterfallChart"></canvas>
                         </div>
                         <div class="chart-card">
                             <h3>Top Gastos por Categoría</h3>
@@ -180,34 +198,8 @@
             <section class="view-section view-movimientos" id="viewMovimientos">
                 <div class="movements-section">
                     <div class="movements-header">
-                        <h2 class="section-title">MOVIMIENTOS</h2>
+                        <h2 class="section-title">MOVIMIENTOS DETALLADOS <span class="date-range-badge" id="movementsDateRange"></span></h2>
                         <div class="movements-controls">
-                            <div class="date-filters">
-                                <label>
-                                    Fecha (año)
-                                    <select id="filterYear" aria-label="Filtrar por año">
-                                        <option value="all">Todos</option>
-                                    </select>
-                                </label>
-                                <label>
-                                    Fecha (mes)
-                                    <select id="filterMonth" aria-label="Filtrar por mes">
-                                        <option value="all">Todos</option>
-                                    </select>
-                                </label>
-                            </div>
-                            <div class="group-controls">
-                                <span class="group-label">Niveles:</span>
-                                <label class="group-check">
-                                    <input type="checkbox" id="groupTipo" checked> Tipo
-                                </label>
-                                <label class="group-check">
-                                    <input type="checkbox" id="groupItem" checked> Item
-                                </label>
-                                <label class="group-check">
-                                    <input type="checkbox" id="groupCategoria" checked> Categoría
-                                </label>
-                            </div>
                             <button class="btn-expand" id="btnExpandAll" title="Expandir todas las filas">
                                 <i class="fa-solid fa-expand"></i> Expandir
                             </button>
@@ -222,7 +214,7 @@
                             </thead>
                             <tbody id="movementsBody">
                                 <tr>
-                                    <td class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                                    <td class="empty-message">Importe el archivo CSV para visualizar los datos</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -272,40 +264,37 @@
                         <thead>
                             <tr class="db-header-row">
                                 <th class="col-check"><input type="checkbox" id="dbSelectAll" title="Seleccionar todos"></th>
+                                <th>Abono</th>
+                                <th>Empresa</th>
                                 <th>Tipo</th>
-                                <th>Centro Costos</th>
-                                <th>Item</th>
+                                <th>Grupo</th>
                                 <th>Categoría</th>
                                 <th>Subcategoría</th>
-                                <th>Detalle</th>
-                                <th>Fecha</th>
-                                <th>Monto</th>
+                                <th>Código</th>
+                                <th>Mes</th>
+                                <th>Valor</th>
                             </tr>
                             <tr class="db-filter-row">
                                 <th></th>
+                                <th><input type="text" id="filterDbAbono" placeholder="Filtrar..." aria-label="Filtrar abono"></th>
+                                <th><select id="filterDbEmpresa" aria-label="Filtrar por empresa"><option value="">Todos</option></select></th>
                                 <th><select id="filterDbTipo" aria-label="Filtrar por tipo"><option value="">Todos</option></select></th>
-                                <th><select id="filterDbCC" aria-label="Filtrar por CC"><option value="">Todos</option></select></th>
-                                <th><select id="filterDbItem" aria-label="Filtrar por item"><option value="">Todos</option></select></th>
+                                <th><select id="filterDbGrupo" aria-label="Filtrar por grupo"><option value="">Todos</option></select></th>
                                 <th><select id="filterDbCategoria" aria-label="Filtrar por categoría"><option value="">Todos</option></select></th>
                                 <th><input type="text" id="filterDbSubcat" placeholder="Filtrar..." aria-label="Filtrar subcategoría"></th>
-                                <th><input type="text" id="filterDbDetalle" placeholder="Filtrar..." aria-label="Filtrar detalle"></th>
-                                <th>
-                                    <div class="filter-date-range">
-                                        <input type="date" id="filterDbFechaDesde" aria-label="Fecha desde" title="Desde">
-                                        <input type="date" id="filterDbFechaHasta" aria-label="Fecha hasta" title="Hasta">
-                                    </div>
-                                </th>
+                                <th><input type="text" id="filterDbCodigo" placeholder="Filtrar..." aria-label="Filtrar código"></th>
+                                <th><select id="filterDbMes" aria-label="Filtrar por mes"><option value="">Todos</option></select></th>
                                 <th>
                                     <div class="filter-monto-range">
-                                        <input type="number" id="filterDbMontoMin" placeholder="Min" aria-label="Monto mínimo">
-                                        <input type="number" id="filterDbMontoMax" placeholder="Max" aria-label="Monto máximo">
+                                        <input type="number" id="filterDbValorMin" placeholder="Min" aria-label="Valor mínimo">
+                                        <input type="number" id="filterDbValorMax" placeholder="Max" aria-label="Valor máximo">
                                     </div>
                                 </th>
                             </tr>
                         </thead>
                         <tbody id="dbBody">
                             <tr>
-                                <td colspan="9" class="empty-message">Importe un archivo CSV para visualizar los datos</td>
+                                <td colspan="10" class="empty-message">Importe el archivo CSV para visualizar los datos</td>
                             </tr>
                         </tbody>
                     </table>
@@ -334,17 +323,21 @@
                         <div class="modal-body">
                             <input type="hidden" id="editIndex">
                             <div class="modal-form-grid">
+                                <div class="form-group full-width">
+                                    <label for="editAbono">Abono (Descripción)</label>
+                                    <input type="text" id="editAbono" title="Abono" placeholder="Descripción del movimiento">
+                                </div>
+                                <div class="form-group">
+                                    <label for="editEmpresa">Empresa</label>
+                                    <select id="editEmpresa" title="Empresa"></select>
+                                </div>
                                 <div class="form-group">
                                     <label for="editTipo">Tipo de Movimiento</label>
                                     <select id="editTipo" title="Tipo de movimiento"></select>
                                 </div>
                                 <div class="form-group">
-                                    <label for="editCC">Centro de Costos</label>
-                                    <select id="editCC" title="Centro de costos"></select>
-                                </div>
-                                <div class="form-group">
-                                    <label for="editItem">Item</label>
-                                    <select id="editItem" title="Item"></select>
+                                    <label for="editGrupo">Grupo</label>
+                                    <select id="editGrupo" title="Grupo"></select>
                                 </div>
                                 <div class="form-group">
                                     <label for="editCategoria">Categoría</label>
@@ -355,16 +348,16 @@
                                     <input type="text" id="editSubcategoria" title="Subcategoría" placeholder="Ingrese subcategoría">
                                 </div>
                                 <div class="form-group">
-                                    <label for="editFecha">Fecha</label>
-                                    <input type="date" id="editFecha" title="Fecha">
-                                </div>
-                                <div class="form-group full-width">
-                                    <label for="editDetalle">Detalle</label>
-                                    <input type="text" id="editDetalle" title="Detalle" placeholder="Descripción del movimiento">
+                                    <label for="editCodigo">Código</label>
+                                    <input type="text" id="editCodigo" title="Código" placeholder="Ej: 01.02.03.04">
                                 </div>
                                 <div class="form-group">
-                                    <label for="editMonto">Monto ($)</label>
-                                    <input type="number" id="editMonto" step="1" title="Monto" placeholder="0">
+                                    <label for="editMes">Mes</label>
+                                    <select id="editMes" title="Mes"></select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="editValor">Valor ($)</label>
+                                    <input type="number" id="editValor" step="1" title="Valor" placeholder="0">
                                 </div>
                             </div>
                         </div>
@@ -386,19 +379,19 @@
                             <p class="bulk-info">Seleccione los campos que desea modificar. Solo los campos con valores serán actualizados.</p>
                             <div class="bulk-form">
                                 <div class="bulk-field">
+                                    <input type="checkbox" id="bulkCheckEmpresa" title="Modificar empresa">
+                                    <label for="bulkEmpresa">Empresa</label>
+                                    <select id="bulkEmpresa" disabled title="Seleccionar empresa"></select>
+                                </div>
+                                <div class="bulk-field">
                                     <input type="checkbox" id="bulkCheckTipo" title="Modificar tipo">
                                     <label for="bulkTipo">Tipo de Movimiento</label>
                                     <select id="bulkTipo" disabled title="Seleccionar tipo"></select>
                                 </div>
                                 <div class="bulk-field">
-                                    <input type="checkbox" id="bulkCheckCC" title="Modificar centro de costos">
-                                    <label for="bulkCC">Centro de Costos</label>
-                                    <select id="bulkCC" disabled title="Seleccionar centro de costos"></select>
-                                </div>
-                                <div class="bulk-field">
-                                    <input type="checkbox" id="bulkCheckItem" title="Modificar item">
-                                    <label for="bulkItem">Item</label>
-                                    <select id="bulkItem" disabled title="Seleccionar item"></select>
+                                    <input type="checkbox" id="bulkCheckGrupo" title="Modificar grupo">
+                                    <label for="bulkGrupo">Grupo</label>
+                                    <select id="bulkGrupo" disabled title="Seleccionar grupo"></select>
                                 </div>
                                 <div class="bulk-field">
                                     <input type="checkbox" id="bulkCheckCategoria" title="Modificar categoría">

@@ -1,6 +1,6 @@
 /**
- * Dashboard Financiero CRAMSA
- * Lectura de BD CRAMSA.csv y visualización completa
+ * Control Financiero - Dashboard de Flujo de Caja
+ * Adaptado para CSV con estructura: Abonos;Empresa;Tipo de movimiento;Grupo;Categoría;Subcategoría;Codigo;Mes;Valor
  */
 
 const monthLabels = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"];
@@ -8,16 +8,18 @@ const monthLabels = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "se
 const state = {
     rawData: [],
     filteredData: [],
-    years: [],
-    months: [],
-    currentCC: "all",
-    currentYear: "all",
-    currentMonth: "all",
-    dateFrom: null,
-    dateTo: null,
-    groupLevels: { tipo: true, item: true, categoria: true },
+    meses: [], // Lista de meses únicos ordenados (mesKey)
+    currentEmpresa: "all",
+    mesDesde: null,
+    mesHasta: null,
+    mesActual: null, // Mes actual seleccionado (para distinguir real vs proyección)
+    rangeMinIdx: 0,
+    rangeMaxIdx: 0,
+    groupLevels: { tipo: true, grupo: true, categoria: true },
     paretoThreshold: 0.8,
     charts: {},
+    summaryInsights: [],
+    kpiUseFullRange: true, // true = inicio a mes actual, false = usar rango seleccionado
     // Estado para Base de Datos
     db: {
         searchTerm: "",
@@ -25,41 +27,59 @@ const state = {
         pageSize: 50,
         selectedRows: new Set(),
         filteredData: [],
-        isEditMode: false, // Toggle para habilitar/deshabilitar edición de celdas
-        // Filtros por columna
+        isEditMode: false,
         filters: {
+            abono: "",
+            empresa: "",
             tipo: "",
-            cc: "",
-            item: "",
+            grupo: "",
             categoria: "",
             subcategoria: "",
-            detalle: "",
-            fechaDesde: null,
-            fechaHasta: null,
-            montoMin: null,
-            montoMax: null
+            codigo: "",
+            mes: "",
+            valorMin: null,
+            valorMax: null
         }
     }
 };
 
-// Colores para gráficos
+// Colores para gráficos - Paleta Corporativa CRAMSA
 const chartColors = {
-    ingresos: { border: "#00c853", bg: "rgba(0, 200, 83, 0.4)" },
-    egresos: { border: "#d32f2f", bg: "rgba(211, 47, 47, 0.4)" }
+    ingresos: { border: "#00a878", bg: "rgba(0, 168, 120, 0.35)" },
+    egresos: { border: "#e63946", bg: "rgba(230, 57, 70, 0.35)" }
+};
+
+// Paleta corporativa CRAMSA para gráficos
+const cramsaPalette = {
+    primary: '#003978',      // PANTONE 281 C - Azul corporativo
+    secondary: '#007BA5',    // PANTONE 314 C - Azul secundario
+    gold: '#F2A900',         // PANTONE 130 C - Dorado
+    black: '#101820',        // PANTONE Black 6 C
+    brown: '#6E4C1E',        // PANTONE 1405 C
+    navy: '#13294B',         // PANTONE 2767 C
+    orange: '#FC4C02',       // PANTONE 1655 C
+    tealDark: '#005670',     // PANTONE 7708 C
+    teal: '#4298B5',         // PANTONE 7459 C
+    tealDeep: '#005A6F',     // PANTONE 7470 C
+    // Colores adicionales para gráficos
+    chartColors: [
+        '#003978', '#007BA5', '#4298B5', '#005670', '#005A6F',
+        '#F2A900', '#FC4C02', '#13294B', '#6E4C1E', '#101820'
+    ]
 };
 
 document.addEventListener("DOMContentLoaded", () => {
     setupNavTabs();
-    setupCCFilters();
-    setupDateFilters();
-    setupDateRangeFilters();
+    setupEmpresaFilters();
+    setupRangeSlider();
+    setupMesActualFilter();
     setupImportCSV();
     setupClearData();
     setupExpandCollapse();
     setupParetoFilters();
     setupGroupCheckboxes();
     setupDatabaseControls();
-    // setupExportPDF(); // Desactivado
+    setupSummaryTools();
     
     // Intentar cargar datos guardados en localStorage
     loadFromLocalStorage();
@@ -68,12 +88,7 @@ document.addEventListener("DOMContentLoaded", () => {
 // ===== PERSISTENCIA EN LOCALSTORAGE =====
 function saveToLocalStorage() {
     try {
-        // Guardar los datos raw (sin las fechas como objetos Date)
-        const dataToSave = state.rawData.map(row => ({
-            ...row,
-            fecha: row.fecha ? row.fecha.toISOString() : null
-        }));
-        localStorage.setItem("cramsa_data", JSON.stringify(dataToSave));
+        localStorage.setItem("flujo_caja_data", JSON.stringify(state.rawData));
     } catch (e) {
         console.warn("No se pudo guardar en localStorage:", e);
     }
@@ -81,19 +96,14 @@ function saveToLocalStorage() {
 
 function loadFromLocalStorage() {
     try {
-        const savedData = localStorage.getItem("cramsa_data");
+        const savedData = localStorage.getItem("flujo_caja_data");
         if (savedData) {
             const parsedData = JSON.parse(savedData);
             if (parsedData && parsedData.length > 0) {
-                // Restaurar las fechas como objetos Date
-                state.rawData = parsedData.map(row => ({
-                    ...row,
-                    fecha: row.fecha ? new Date(row.fecha) : null
-                }));
-                
+                state.rawData = parsedData;
                 extractFilterOptions();
                 buildDynamicHeaders();
-                buildCCButtons();
+                buildEmpresaButtons();
                 applyFilters();
                 return;
             }
@@ -102,13 +112,12 @@ function loadFromLocalStorage() {
         console.warn("No se pudo cargar desde localStorage:", e);
     }
     
-    // Si no hay datos guardados, mostrar estado vacío
     showEmptyState();
 }
 
 function clearLocalStorage() {
     try {
-        localStorage.removeItem("cramsa_data");
+        localStorage.removeItem("flujo_caja_data");
     } catch (e) {
         console.warn("No se pudo limpiar localStorage:", e);
     }
@@ -122,21 +131,14 @@ function showEmptyState() {
     const movementsBody = document.getElementById("movementsBody");
 
     if (summaryHead) summaryHead.innerHTML = "";
-    if (summaryBody) summaryBody.innerHTML = `<tr><td class="empty-message">Importe un archivo CSV para visualizar los datos</td></tr>`;
+    if (summaryBody) summaryBody.innerHTML = `<tr><td class="empty-message">Importe el archivo CSV para visualizar los datos</td></tr>`;
     if (movementsHead) movementsHead.innerHTML = "";
-    if (movementsBody) movementsBody.innerHTML = `<tr><td class="empty-message">Importe un archivo CSV para visualizar los datos</td></tr>`;
-
-    // Limpiar KPIs
-    document.getElementById("kpiSaldoInicial").textContent = "$0";
-    document.getElementById("kpiEntradas").textContent = "$0";
-    document.getElementById("kpiSalidas").textContent = "$0";
-    document.getElementById("kpiFinal").textContent = "$0";
+    if (movementsBody) movementsBody.innerHTML = `<tr><td class="empty-message">Importe el archivo CSV para visualizar los datos</td></tr>`;
 
     // Destruir gráficos
     destroyChart("line");
     destroyChart("donut");
     destroyChart("horizontal");
-    destroyChart("waterfall");
     destroyChart("pareto");
 
     // Limpiar tabla Pareto
@@ -144,92 +146,107 @@ function showEmptyState() {
     if (paretoBody) paretoBody.innerHTML = `<tr><td colspan="4" class="empty-message">Sin datos</td></tr>`;
 }
 
-// ===== CARGA DE DATOS =====
-function loadData() {
-    // Esta función ya no se llama automáticamente
-    // Solo se usa si se quiere cargar un archivo por defecto
-}
-
+// ===== PROCESAMIENTO DE DATOS =====
 function processData(data) {
     state.rawData = data.map(normalizeRow).filter(Boolean);
     extractFilterOptions();
     applyFilters();
 }
 
+/**
+ * Parsea el formato de mes MM-YY a un objeto con año y mes
+ * Ej: "03-25" -> { year: 2025, month: 2 } (marzo = índice 2)
+ */
+function parseMes(mesStr) {
+    if (!mesStr || typeof mesStr !== 'string') return null;
+    
+    const match = mesStr.trim().match(/^(\d{2})-(\d{2})$/);
+    if (!match) return null;
+    
+    const month = parseInt(match[1], 10) - 1; // Convertir a índice 0-11
+    const yearShort = parseInt(match[2], 10);
+    const year = yearShort >= 0 && yearShort <= 50 ? 2000 + yearShort : 1900 + yearShort;
+    
+    if (month < 0 || month > 11) return null;
+    
+    return { year, month, original: mesStr };
+}
+
+/**
+ * Convierte año y mes a formato de ordenación numérico
+ * Ej: 2025, 2 (marzo) -> 202502
+ */
+function getMesKey(year, month) {
+    return year * 100 + (month + 1);
+}
+
+/**
+ * Formatea un mes para mostrar
+ * Ej: { year: 2025, month: 2 } -> "mar-25"
+ */
+function formatMesDisplay(year, month) {
+    return `${monthLabels[month]}-${String(year).slice(-2)}`;
+}
+
 function normalizeRow(row) {
     const tipo = row["Tipo de movimiento"]?.trim();
     if (!tipo) return null;
 
-    // Intentar parsear la fecha en diferentes formatos
-    let fecha = null;
-    const fechaValue = row.Fecha;
-    
-    if (fechaValue) {
-        // Primero intentar como número serial de Excel
-        const serial = Number(fechaValue);
-        if (Number.isFinite(serial) && serial > 1000) {
-            fecha = excelSerialToDate(serial);
-        } else {
-            // Intentar como fecha en formato DD/MM/YYYY
-            const dateMatch = String(fechaValue).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-            if (dateMatch) {
-                const [, day, month, year] = dateMatch;
-                fecha = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-            } else {
-                // Intentar como fecha ISO (YYYY-MM-DD)
-                const isoDate = new Date(fechaValue);
-                if (!isNaN(isoDate.getTime())) {
-                    fecha = isoDate;
-                }
-            }
-        }
-    }
+    const mesStr = row["Mes"]?.trim();
+    const mesParsed = parseMes(mesStr);
+    if (!mesParsed) return null;
 
-    if (!fecha || isNaN(fecha.getTime())) return null;
-
-    const monto = Number(row.Monto) || 0;
+    const valor = Number(row["Valor"]) || 0;
 
     return {
+        abono: row["Abonos"]?.trim() || "",
+        empresa: row["Empresa"]?.trim() || "",
         tipo,
-        cc: row["Centro de costos"]?.trim() || "",
-        item: row["Item"]?.trim() || "-",
+        grupo: row["Grupo"]?.trim() || "-",
         categoria: row["Categoría"]?.trim() || "Sin categoría",
         subcategoria: row["Subcategoría"]?.trim() || "-",
-        detalle: row["Detalle"]?.trim() || "",
-        monto,
-        fecha,
-        year: fecha.getFullYear(),
-        month: fecha.getMonth()
+        codigo: row["Codigo"]?.trim() || "",
+        mes: mesStr,
+        year: mesParsed.year,
+        month: mesParsed.month,
+        mesKey: getMesKey(mesParsed.year, mesParsed.month),
+        valor
     };
 }
 
-function excelSerialToDate(serial) {
-    // Base Excel: 30/12/1899, pero hay que sumar 1 día para corregir el offset
-    const base = Date.UTC(1899, 11, 30);
-    // Sumar 1 día (86400000 ms) para corregir el desfase
-    return new Date(base + (serial + 1) * 24 * 60 * 60 * 1000);
+function extractFilterOptions() {
+    // Extraer meses únicos y ordenarlos
+    const mesesSet = new Set();
+    state.rawData.forEach(r => {
+        if (r.mesKey) mesesSet.add(r.mesKey);
+    });
+    state.meses = Array.from(mesesSet).sort((a, b) => a - b);
+
+    // Poblar selects de mes
+    populateMesSelects();
 }
 
-function extractFilterOptions() {
-    state.years = [...new Set(state.rawData.map((r) => r.year))].sort();
-    state.months = [...new Set(state.rawData.map((r) => r.month))].sort((a, b) => a - b);
-
-    const yearSelect = document.getElementById("filterYear");
-    const monthSelect = document.getElementById("filterMonth");
-
-    if (yearSelect) {
-        yearSelect.innerHTML = `<option value="all">Todos</option>`;
-        state.years.forEach((y) => {
-            yearSelect.innerHTML += `<option value="${y}">${y}</option>`;
-        });
+function populateMesSelects() {
+    // Auto-seleccionar noviembre 2025 si existe (11-25 = 202511)
+    const nov25 = 202511;
+    if (state.meses.includes(nov25)) {
+        state.mesActual = nov25;
+        monthPickerYear = 2025;
+        
+        // Actualizar botón del month picker
+        const btn = document.getElementById("monthPickerValue");
+        if (btn) {
+            btn.textContent = "Nov 2025";
+        }
+        updateMesActualInfo();
+    } else if (state.meses.length > 0) {
+        // Si no hay nov 2025, usar el último mes disponible
+        const lastMes = state.meses[state.meses.length - 1];
+        monthPickerYear = Math.floor(lastMes / 100);
     }
-
-    if (monthSelect) {
-        monthSelect.innerHTML = `<option value="all">Todos</option>`;
-        state.months.forEach((m) => {
-            monthSelect.innerHTML += `<option value="${m}">${monthLabels[m]}</option>`;
-        });
-    }
+    
+    // Inicializar el range slider
+    initializeRangeSlider();
 }
 
 function showError(msg) {
@@ -269,59 +286,257 @@ function setupNavTabs() {
     });
 }
 
-function setupCCFilters() {
-    const buttons = document.querySelectorAll(".cc-btn");
+function setupEmpresaFilters() {
+    const buttons = document.querySelectorAll(".empresa-btn");
     buttons.forEach((btn) => {
         btn.addEventListener("click", () => {
             buttons.forEach((b) => b.classList.remove("active"));
             btn.classList.add("active");
-            state.currentCC = btn.dataset.cc;
+            state.currentEmpresa = btn.dataset.empresa;
             applyFilters();
         });
     });
 }
 
-function setupDateFilters() {
-    const yearSelect = document.getElementById("filterYear");
-    const monthSelect = document.getElementById("filterMonth");
+let rangeSlider = null;
 
-    yearSelect?.addEventListener("change", () => {
-        state.currentYear = yearSelect.value;
-        applyFilters();
-    });
-
-    monthSelect?.addEventListener("change", () => {
-        state.currentMonth = monthSelect.value;
+function setupRangeSlider() {
+    const btnClear = document.getElementById("btnClearDates");
+    
+    btnClear?.addEventListener("click", () => {
+        resetRangeSlider();
         applyFilters();
     });
 }
 
-function setupDateRangeFilters() {
-    const dateFrom = document.getElementById("dateFrom");
-    const dateTo = document.getElementById("dateTo");
-    const btnClear = document.getElementById("btnClearDates");
+// Estado del month picker
+let monthPickerYear = new Date().getFullYear();
 
-    dateFrom?.addEventListener("change", () => {
-        state.dateFrom = dateFrom.value ? new Date(dateFrom.value + "-01") : null;
-        applyFilters();
-    });
-
-    dateTo?.addEventListener("change", () => {
-        state.dateTo = dateTo.value ? new Date(dateTo.value + "-01") : null;
-        // Ajustar al último día del mes
-        if (state.dateTo) {
-            state.dateTo = new Date(state.dateTo.getFullYear(), state.dateTo.getMonth() + 1, 0);
+function setupMesActualFilter() {
+    const btn = document.getElementById("monthPickerBtn");
+    const dropdown = document.getElementById("monthPickerDropdown");
+    const prevYear = document.getElementById("monthPickerPrevYear");
+    const nextYear = document.getElementById("monthPickerNextYear");
+    
+    // Toggle dropdown
+    btn?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dropdown?.classList.toggle("active");
+        if (dropdown?.classList.contains("active")) {
+            renderMonthPicker();
         }
-        applyFilters();
     });
+    
+    // Cerrar al hacer click fuera
+    document.addEventListener("click", (e) => {
+        if (!e.target.closest(".month-picker-container")) {
+            dropdown?.classList.remove("active");
+        }
+    });
+    
+    // Navegación de años
+    prevYear?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        monthPickerYear--;
+        renderMonthPicker();
+    });
+    
+    nextYear?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        monthPickerYear++;
+        renderMonthPicker();
+    });
+}
 
-    btnClear?.addEventListener("click", () => {
-        dateFrom.value = "";
-        dateTo.value = "";
-        state.dateFrom = null;
-        state.dateTo = null;
+function renderMonthPicker() {
+    const grid = document.getElementById("monthPickerGrid");
+    const yearLabel = document.getElementById("monthPickerYear");
+    const prevBtn = document.getElementById("monthPickerPrevYear");
+    const nextBtn = document.getElementById("monthPickerNextYear");
+    
+    if (!grid) return;
+    
+    yearLabel.textContent = monthPickerYear;
+    
+    // Determinar años disponibles
+    const availableYears = [...new Set(state.meses.map(m => Math.floor(m / 100)))];
+    const minYear = Math.min(...availableYears);
+    const maxYear = Math.max(...availableYears);
+    
+    // Habilitar/deshabilitar botones de navegación
+    if (prevBtn) prevBtn.disabled = monthPickerYear <= minYear;
+    if (nextBtn) nextBtn.disabled = monthPickerYear >= maxYear;
+    
+    // Generar grid de meses
+    const monthNames = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+    
+    grid.innerHTML = monthNames.map((name, idx) => {
+        const mesKey = monthPickerYear * 100 + (idx + 1);
+        const isAvailable = state.meses.includes(mesKey);
+        const isSelected = state.mesActual === mesKey;
+        
+        return `<button 
+            class="month-picker-item ${isSelected ? 'selected' : ''} ${isAvailable ? 'available' : ''}" 
+            data-meskey="${mesKey}"
+            ${!isAvailable ? 'disabled' : ''}
+            type="button"
+        >${name}</button>`;
+    }).join("");
+    
+    // Event listeners para selección
+    grid.querySelectorAll(".month-picker-item:not(:disabled)").forEach(item => {
+        item.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const mesKey = parseInt(item.dataset.meskey);
+            selectMonth(mesKey);
+        });
+    });
+}
+
+function selectMonth(mesKey) {
+    state.mesActual = mesKey;
+    
+    // Actualizar botón
+    const btn = document.getElementById("monthPickerValue");
+    if (btn) {
+        const year = Math.floor(mesKey / 100);
+        const month = (mesKey % 100) - 1;
+        btn.textContent = `${monthLabels[month].charAt(0).toUpperCase() + monthLabels[month].slice(1)} ${year}`;
+    }
+    
+    // Cerrar dropdown
+    document.getElementById("monthPickerDropdown")?.classList.remove("active");
+    
+    // Actualizar info y filtros
+    updateMesActualInfo();
+    applyFilters();
+}
+
+function initializeRangeSlider() {
+    const sliderEl = document.getElementById("mesRangeSlider");
+    if (!sliderEl || state.meses.length === 0) return;
+    
+    // Destruir slider existente si hay uno
+    if (rangeSlider) {
+        rangeSlider.destroy();
+        rangeSlider = null;
+    }
+    
+    const maxIdx = state.meses.length - 1;
+    
+    rangeSlider = noUiSlider.create(sliderEl, {
+        start: [0, maxIdx],
+        connect: true,
+        step: 1,
+        range: {
+            'min': 0,
+            'max': maxIdx
+        },
+        tooltips: [
+            { to: (val) => formatMesTooltip(Math.round(val)) },
+            { to: (val) => formatMesTooltip(Math.round(val)) }
+        ]
+    });
+    
+    rangeSlider.on('update', (values) => {
+        const minIdx = Math.round(values[0]);
+        const maxIdx = Math.round(values[1]);
+        
+        state.rangeMinIdx = minIdx;
+        state.rangeMaxIdx = maxIdx;
+        state.mesDesde = state.meses[minIdx] || null;
+        state.mesHasta = state.meses[maxIdx] || null;
+        
+        updateSliderLabels();
+    });
+    
+    rangeSlider.on('change', () => {
         applyFilters();
     });
+    
+    state.rangeMinIdx = 0;
+    state.rangeMaxIdx = maxIdx;
+    state.mesDesde = state.meses[0];
+    state.mesHasta = state.meses[maxIdx];
+    
+    updateSliderLabels();
+}
+
+function formatMesTooltip(idx) {
+    if (!state.meses[idx]) return '';
+    const mesKey = state.meses[idx];
+    const year = Math.floor(mesKey / 100);
+    const month = (mesKey % 100) - 1;
+    return formatMesDisplay(year, month);
+}
+
+function updateSliderLabels() {
+    const minLabel = document.getElementById("rangeMinLabel");
+    const maxLabel = document.getElementById("rangeMaxLabel");
+    const monthsCount = document.getElementById("rangeMonthsCount");
+    
+    if (state.meses.length === 0) {
+        if (minLabel) minLabel.textContent = "-";
+        if (maxLabel) maxLabel.textContent = "-";
+        if (monthsCount) monthsCount.textContent = "0 meses";
+        return;
+    }
+    
+    const minMesKey = state.meses[state.rangeMinIdx];
+    const maxMesKey = state.meses[state.rangeMaxIdx];
+    
+    if (minLabel && minMesKey) {
+        const year = Math.floor(minMesKey / 100);
+        const month = (minMesKey % 100) - 1;
+        minLabel.textContent = formatMesDisplay(year, month);
+    }
+    
+    if (maxLabel && maxMesKey) {
+        const year = Math.floor(maxMesKey / 100);
+        const month = (maxMesKey % 100) - 1;
+        maxLabel.textContent = formatMesDisplay(year, month);
+    }
+    
+    // Actualizar contador de meses
+    if (monthsCount) {
+        const count = state.rangeMaxIdx - state.rangeMinIdx + 1;
+        monthsCount.textContent = `${count} ${count === 1 ? 'mes' : 'meses'}`;
+    }
+}
+
+function resetRangeSlider() {
+    if (!rangeSlider || state.meses.length === 0) return;
+    
+    const maxIdx = state.meses.length - 1;
+    rangeSlider.set([0, maxIdx]);
+    
+    state.rangeMinIdx = 0;
+    state.rangeMaxIdx = maxIdx;
+    state.mesDesde = state.meses[0];
+    state.mesHasta = state.meses[maxIdx];
+    
+    updateSliderLabels();
+}
+
+function updateMesActualInfo() {
+    const infoEl = document.getElementById("mesActualInfo");
+    if (!infoEl) return;
+    
+    if (!state.mesActual) {
+        infoEl.textContent = "";
+        return;
+    }
+    
+    const mesActualIdx = state.meses.indexOf(state.mesActual);
+    if (mesActualIdx === -1) {
+        infoEl.textContent = "";
+        return;
+    }
+    
+    const mesesReales = mesActualIdx + 1;
+    const mesesProyectados = state.meses.length - mesesReales;
+    
+    infoEl.innerHTML = `<span class="real-badge">${mesesReales} real${mesesReales !== 1 ? 'es' : ''}</span> <span class="proj-badge">${mesesProyectados} proyectado${mesesProyectados !== 1 ? 's' : ''}</span>`;
 }
 
 function setupImportCSV() {
@@ -334,18 +549,16 @@ function setupImportCSV() {
         const file = e.target.files[0];
         if (!file) return;
 
-        // Intentar primero con UTF-8 (formato de exportación)
         Papa.parse(file, {
             header: true,
             delimiter: ";",
             encoding: "UTF-8",
             skipEmptyLines: true,
             complete: ({ data }) => {
-                // Verificar si los datos se parsearon correctamente
                 const validData = data.filter(row => row["Tipo de movimiento"]?.trim());
                 
                 if (validData.length === 0) {
-                    // Si no hay datos válidos con UTF-8, intentar con ISO-8859-1
+                    // Intentar con ISO-8859-1
                     Papa.parse(file, {
                         header: true,
                         delimiter: ";",
@@ -368,20 +581,15 @@ function setupImportCSV() {
                 alert("Error al importar el archivo CSV.");
             }
         });
-        // Reset input para permitir cargar el mismo archivo de nuevo
         csvInput.value = "";
     });
 }
 
 function processImportedData(data) {
-    // Resetear filtros de Base de Datos antes de cargar nuevos datos
     resetDbFilters();
-    
     processData(data);
     buildDynamicHeaders();
-    buildCCButtons();
-    
-    // Guardar en localStorage para persistencia
+    buildEmpresaButtons();
     saveToLocalStorage();
     
     alert(`CSV importado: ${state.rawData.length} registros cargados.`);
@@ -393,42 +601,30 @@ function setupClearData() {
         if (confirm("¿Está seguro de que desea limpiar todos los datos?")) {
             state.rawData = [];
             state.filteredData = [];
-            state.years = [];
-            state.months = [];
-            state.currentCC = "all";
-            state.currentYear = "all";
-            state.currentMonth = "all";
-            state.dateFrom = null;
-            state.dateTo = null;
+            state.meses = [];
+            state.currentEmpresa = "all";
+            state.mesDesde = null;
+            state.mesHasta = null;
 
-            // Limpiar localStorage
             clearLocalStorage();
 
-            // Limpiar inputs de fecha
-            const dateFrom = document.getElementById("dateFrom");
-            const dateTo = document.getElementById("dateTo");
-            if (dateFrom) dateFrom.value = "";
-            if (dateTo) dateTo.value = "";
+            // Limpiar selects de mes
+            const mesDesde = document.getElementById("mesDesde");
+            const mesHasta = document.getElementById("mesHasta");
+            if (mesDesde) mesDesde.value = "";
+            if (mesHasta) mesHasta.value = "";
 
-            // Resetear botones CC
-            const ccContainer = document.querySelector(".cc-filters");
-            if (ccContainer) {
-                ccContainer.innerHTML = `
-                    <span class="filter-label">Centro de Costos:</span>
-                    <button class="cc-btn active" data-cc="all">Todos</button>
+            // Resetear botones Empresa
+            const empresaContainer = document.querySelector(".empresa-filters");
+            if (empresaContainer) {
+                empresaContainer.innerHTML = `
+                    <span class="filter-label">Empresa:</span>
+                    <button class="empresa-btn active" data-empresa="all">Consolidado</button>
                 `;
-                setupCCFilters();
+                setupEmpresaFilters();
             }
 
-            // Resetear selects de filtro
-            const yearSelect = document.getElementById("filterYear");
-            const monthSelect = document.getElementById("filterMonth");
-            if (yearSelect) yearSelect.innerHTML = `<option value="all">Todos</option>`;
-            if (monthSelect) monthSelect.innerHTML = `<option value="all">Todos</option>`;
-
-            // Resetear filtros de Base de Datos
             resetDbFilters();
-
             showEmptyState();
         }
     });
@@ -443,37 +639,34 @@ function resetDbFilters() {
         filteredData: [],
         isEditMode: false,
         filters: {
+            abono: "",
+            empresa: "",
             tipo: "",
-            cc: "",
-            item: "",
+            grupo: "",
             categoria: "",
             subcategoria: "",
-            detalle: "",
-            fechaDesde: null,
-            fechaHasta: null,
-            montoMin: null,
-            montoMax: null
+            codigo: "",
+            mes: "",
+            valorMin: null,
+            valorMax: null
         }
     };
 
     // Limpiar UI de filtros
-    const filterIds = ["dbSearch", "filterDbSubcat", "filterDbDetalle", "filterDbFechaDesde", "filterDbFechaHasta", "filterDbMontoMin", "filterDbMontoMax"];
+    const filterIds = ["dbSearch", "filterDbAbono", "filterDbSubcat", "filterDbCodigo", "filterDbValorMin", "filterDbValorMax"];
     filterIds.forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = "";
     });
 
-    // Resetear selects de filtro
-    ["filterDbTipo", "filterDbCC", "filterDbItem", "filterDbCategoria"].forEach((id) => {
+    ["filterDbEmpresa", "filterDbTipo", "filterDbGrupo", "filterDbCategoria", "filterDbMes"].forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = `<option value="">Todos</option>`;
     });
 
-    // Resetear checkbox de seleccionar todos
     const selectAll = document.getElementById("dbSelectAll");
     if (selectAll) selectAll.checked = false;
 
-    // Resetear botón de modo edición
     const btnEditMode = document.getElementById("btnEditMode");
     btnEditMode?.classList.remove("active");
 
@@ -484,6 +677,27 @@ function buildDynamicHeaders() {
     const columns = getColumns();
     const summaryHead = document.getElementById("summaryHead");
     const movementsHead = document.getElementById("movementsHead");
+    const summaryDateRange = document.getElementById("summaryDateRange");
+    const movementsDateRange = document.getElementById("movementsDateRange");
+
+    // Actualizar badges de rango de fechas
+    if (columns.length > 0) {
+        const firstCol = columns[0];
+        const lastCol = columns[columns.length - 1];
+        const rangeText = `${monthLabels[firstCol.month].substring(0, 3)} ${firstCol.year} → ${monthLabels[lastCol.month].substring(0, 3)} ${lastCol.year}`;
+        
+        if (summaryDateRange) summaryDateRange.textContent = rangeText;
+        if (movementsDateRange) movementsDateRange.textContent = rangeText;
+    } else {
+        if (summaryDateRange) summaryDateRange.textContent = "";
+        if (movementsDateRange) movementsDateRange.textContent = "";
+    }
+
+    if (columns.length === 0) {
+        if (summaryHead) summaryHead.innerHTML = "";
+        if (movementsHead) movementsHead.innerHTML = "";
+        return;
+    }
 
     // Agrupar columnas por año
     const yearGroups = {};
@@ -493,6 +707,17 @@ function buildDynamicHeaders() {
     });
 
     const years = Object.keys(yearGroups).sort();
+    
+    // Función para determinar si un mes es proyectado
+    const isProjected = (mesKey) => {
+        if (!state.mesActual) return false;
+        return mesKey > state.mesActual;
+    };
+    
+    // Función para determinar si es el mes actual
+    const isMesActual = (mesKey) => {
+        return state.mesActual && mesKey === state.mesActual;
+    };
 
     // Header para Summary
     if (summaryHead) {
@@ -504,7 +729,9 @@ function buildDynamicHeaders() {
             const altClass = idx > 0 ? " year-alt" : "";
             yearRow += `<th colspan="${count}" class="year-header${altClass}">${year}</th>`;
             yearGroups[year].forEach((col) => {
-                monthRow += `<th>${monthLabels[col.month]}</th>`;
+                const projClass = isProjected(col.mesKey) ? " projected-month" : "";
+                const mesActualClass = isMesActual(col.mesKey) ? " col-mes-actual" : "";
+                monthRow += `<th class="${projClass}${mesActualClass}">${monthLabels[col.month]}</th>`;
             });
         });
 
@@ -518,13 +745,16 @@ function buildDynamicHeaders() {
         let headerRow = `<tr>
             <th class="col-expand"></th>
             <th class="col-tipo">Tipo</th>
-            <th class="col-item">Item</th>
+            <th class="col-grupo">Grupo</th>
             <th class="col-categoria">Categoría</th>
             <th class="col-subcategoria">Subcategoría</th>`;
 
-        columns.forEach((col, idx) => {
-            const is2026 = col.year > years[0];
-            headerRow += `<th class="${is2026 ? "col-2026" : ""}">${monthLabels[col.month]}</th>`;
+        const firstYear = years[0];
+        columns.forEach((col) => {
+            const isSecondYear = col.year > parseInt(firstYear);
+            const projClass = isProjected(col.mesKey) ? " projected-month" : "";
+            const mesActualClass = isMesActual(col.mesKey) ? " col-mes-actual" : "";
+            headerRow += `<th class="${isSecondYear ? "col-2026" : ""}${projClass}${mesActualClass}">${monthLabels[col.month]}</th>`;
         });
 
         headerRow += "</tr>";
@@ -532,22 +762,46 @@ function buildDynamicHeaders() {
     }
 }
 
-function buildCCButtons() {
-    const ccContainer = document.querySelector(".cc-filters");
-    if (!ccContainer) return;
+function buildEmpresaButtons() {
+    const empresaContainer = document.querySelector(".empresa-filters");
+    if (!empresaContainer) return;
 
-    // Obtener CCs únicos de los datos
-    const uniqueCCs = [...new Set(state.rawData.map((r) => r.cc))].filter(Boolean).sort();
+    // Obtener empresas únicas de los datos
+    const uniqueEmpresas = [...new Set(state.rawData.map((r) => r.empresa))].filter(Boolean);
 
-    let html = `<span class="filter-label">Centro de Costos:</span>
-                <button class="cc-btn active" data-cc="all">Todos</button>`;
-
-    uniqueCCs.forEach((cc) => {
-        html += `<button class="cc-btn" data-cc="${cc}">${cc}</button>`;
+    // Orden específico: CRAMSA - INFRA - GRUPO - ADD
+    const empresaOrder = {
+        "CRAMSA": 1,
+        "INFRA": 2,
+        "GRUPO": 3,
+        "ADD": 4
+    };
+    
+    // Nombres completos para tooltip
+    const empresaNames = {
+        "CRAMSA": "CRAMSA S.A.",
+        "INFRA": "CRAMSA Infraestructura SpA.",
+        "GRUPO": "Grupo CRAMSA",
+        "ADD": "Aguas del Desierto"
+    };
+    
+    // Ordenar según el orden específico
+    uniqueEmpresas.sort((a, b) => {
+        const orderA = empresaOrder[a] || 999;
+        const orderB = empresaOrder[b] || 999;
+        return orderA - orderB;
     });
 
-    ccContainer.innerHTML = html;
-    setupCCFilters();
+    let html = `<span class="filter-label">Empresa:</span>
+                <button class="empresa-btn active" data-empresa="all" title="Todas las empresas">TODAS</button>`;
+
+    uniqueEmpresas.forEach((empresa) => {
+        const fullName = empresaNames[empresa] || empresa;
+        html += `<button class="empresa-btn" data-empresa="${empresa}" title="${fullName}">${empresa}</button>`;
+    });
+
+    empresaContainer.innerHTML = html;
+    setupEmpresaFilters();
 }
 
 function setupExpandCollapse() {
@@ -584,7 +838,7 @@ function setupParetoFilters() {
 function setupGroupCheckboxes() {
     const checkboxes = {
         tipo: document.getElementById("groupTipo"),
-        item: document.getElementById("groupItem"),
+        grupo: document.getElementById("groupGrupo"),
         categoria: document.getElementById("groupCategoria")
     };
 
@@ -596,51 +850,318 @@ function setupGroupCheckboxes() {
     });
 }
 
+function setupSummaryTools() {
+    document.getElementById("btnResumenPDF")?.addEventListener("click", exportResumenPDF);
+    document.getElementById("btnMostrarTodo")?.addEventListener("click", () => {
+        resetRangeSlider();
+        applyFilters();
+    });
+    document.getElementById("btnIrMesActual")?.addEventListener("click", scrollToMesActual);
+    document.getElementById("btnComparativa")?.addEventListener("click", showComparativaModal);
+    document.getElementById("btnTendencia")?.addEventListener("click", showTendenciaAnalysis);
+    document.getElementById("btnProyeccion")?.addEventListener("click", showProyeccionAnalysis);
+    document.getElementById("btnAnalisisCategoria")?.addEventListener("click", showCategoriaAnalysis);
+    document.getElementById("btnExportarDatos")?.addEventListener("click", exportToCSV);
+    
+    // Toggle para modo de KPI (inicio a mes actual vs rango seleccionado)
+    const kpiToggle = document.getElementById("kpiModeToggle");
+    const kpiModeText = document.getElementById("kpiModeText");
+    if (kpiToggle) {
+        // Sincronizar estado inicial
+        kpiToggle.checked = state.kpiUseFullRange;
+        if (kpiModeText) {
+            kpiModeText.textContent = state.kpiUseFullRange ? "Inicio → Mes actual" : "Meses del rango";
+        }
+        
+        kpiToggle.addEventListener("change", (e) => {
+            state.kpiUseFullRange = e.target.checked;
+            if (kpiModeText) {
+                kpiModeText.textContent = e.target.checked ? "Inicio → Mes actual" : "Meses del rango";
+            }
+            renderKPIs();
+            renderHorizontalChart();
+            renderParetoSection();
+        });
+    }
+}
+
+function exportResumenPDF() {
+    const section = document.querySelector(".summary-section");
+    if (!section || typeof html2pdf === "undefined") {
+        alert("No se pudo generar el PDF en este navegador.");
+        return;
+    }
+
+    const options = {
+        margin: 10,
+        filename: `resumen_flujo_${new Date().toISOString().slice(0, 10)}.pdf`,
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: "mm", format: "a4", orientation: "landscape" }
+    };
+
+    html2pdf().set(options).from(section).save();
+}
+
+// Funciones de análisis avanzado
+function showComparativaModal() {
+    if (state.filteredData.length === 0) {
+        alert("Importa datos primero para realizar comparativas.");
+        return;
+    }
+    const summary = getSummarySeries();
+    if (!summary || summary.columns.length < 2) {
+        alert("Se necesitan al menos 2 meses para comparar.");
+        return;
+    }
+    
+    // Generar comparativa mes a mes
+    let message = "📊 COMPARATIVA MES A MES\n\n";
+    const { columns, netoMes, ingresos, egresos } = summary;
+    
+    for (let i = 1; i < columns.length; i++) {
+        const prevLabel = formatMesDisplay(columns[i-1].year, columns[i-1].month);
+        const currLabel = formatMesDisplay(columns[i].year, columns[i].month);
+        const variacion = netoMes[i] - netoMes[i-1];
+        const pct = netoMes[i-1] !== 0 ? ((variacion / Math.abs(netoMes[i-1])) * 100).toFixed(1) : 0;
+        const signo = variacion >= 0 ? "↑" : "↓";
+        message += `${prevLabel} → ${currLabel}: ${signo} ${formatCurrency(variacion)} (${pct}%)\n`;
+    }
+    
+    alert(message);
+}
+
+function showTendenciaAnalysis() {
+    if (state.filteredData.length === 0) {
+        alert("Importa datos primero para ver tendencias.");
+        return;
+    }
+    const summary = getSummarySeries();
+    if (!summary) return;
+    
+    const { netoMes, ingresos, egresos } = summary;
+    
+    // Calcular tendencias simples
+    const avgNeto = netoMes.reduce((a, b) => a + b, 0) / netoMes.length;
+    const avgIngreso = ingresos.reduce((a, b) => a + b, 0) / ingresos.length;
+    const avgEgreso = Math.abs(egresos.reduce((a, b) => a + b, 0) / egresos.length);
+    
+    // Tendencia (últimos 3 meses vs primeros 3)
+    const len = netoMes.length;
+    if (len >= 6) {
+        const primeros = netoMes.slice(0, 3).reduce((a, b) => a + b, 0) / 3;
+        const ultimos = netoMes.slice(-3).reduce((a, b) => a + b, 0) / 3;
+        const tendencia = ultimos > primeros ? "ALCISTA ↑" : ultimos < primeros ? "BAJISTA ↓" : "ESTABLE →";
+        
+        alert(`📈 ANÁLISIS DE TENDENCIA\n\n` +
+            `Tendencia general: ${tendencia}\n` +
+            `Promedio inicial (3 meses): ${formatCurrency(primeros)}\n` +
+            `Promedio reciente (3 meses): ${formatCurrency(ultimos)}\n\n` +
+            `Promedios del período:\n` +
+            `• Flujo neto: ${formatCurrency(avgNeto)}\n` +
+            `• Ingresos: ${formatCurrency(avgIngreso)}\n` +
+            `• Egresos: ${formatCurrency(avgEgreso)}`);
+    } else {
+        alert(`📈 ANÁLISIS DE TENDENCIA\n\n` +
+            `(Datos insuficientes para tendencia completa)\n\n` +
+            `Promedios del período:\n` +
+            `• Flujo neto: ${formatCurrency(avgNeto)}\n` +
+            `• Ingresos: ${formatCurrency(avgIngreso)}\n` +
+            `• Egresos: ${formatCurrency(avgEgreso)}`);
+    }
+}
+
+function showProyeccionAnalysis() {
+    if (state.filteredData.length === 0) {
+        alert("Importa datos primero para ver proyecciones.");
+        return;
+    }
+    const summary = getSummarySeries();
+    if (!summary) return;
+    
+    const { columns, netoMes, saldoAcumulado, ingresos, egresos } = summary;
+    
+    // Proyección simple basada en promedio
+    const avgNeto = netoMes.reduce((a, b) => a + b, 0) / netoMes.length;
+    const lastSaldo = saldoAcumulado[saldoAcumulado.length - 1];
+    
+    let message = `🔮 PROYECCIÓN (basada en promedios)\n\n`;
+    message += `Saldo actual: ${formatCurrency(lastSaldo)}\n`;
+    message += `Flujo neto promedio: ${formatCurrency(avgNeto)}\n\n`;
+    message += `Proyección próximos meses:\n`;
+    
+    for (let i = 1; i <= 3; i++) {
+        const proyectado = lastSaldo + (avgNeto * i);
+        message += `• +${i} mes${i > 1 ? 'es' : ''}: ${formatCurrency(proyectado)}\n`;
+    }
+    
+    if (avgNeto < 0 && lastSaldo > 0) {
+        const mesesHastaQuiebra = Math.ceil(lastSaldo / Math.abs(avgNeto));
+        message += `\n⚠️ Con el flujo actual, el saldo se agotaría en ~${mesesHastaQuiebra} meses.`;
+    }
+    
+    alert(message);
+}
+
+function showCategoriaAnalysis() {
+    if (state.filteredData.length === 0) {
+        alert("Importa datos primero para analizar categorías.");
+        return;
+    }
+    
+    const egresos = state.filteredData.filter(r => r.tipo === "02_Egreso");
+    const grouped = groupByCategory(egresos);
+    const total = grouped.reduce((acc, g) => acc + g.value, 0);
+    
+    let message = `📋 ANÁLISIS POR CATEGORÍA (Egresos)\n\n`;
+    message += `Total egresos: ${formatCurrency(total)}\n\n`;
+    message += `Top 5 categorías:\n`;
+    
+    grouped.slice(0, 5).forEach((cat, idx) => {
+        const pct = ((cat.value / total) * 100).toFixed(1);
+        message += `${idx + 1}. ${cat.label}: ${formatCurrency(cat.value)} (${pct}%)\n`;
+    });
+    
+    alert(message);
+}
+
+function scrollToMesActual() {
+    const wrapper = document.querySelector(".summary-table-wrapper");
+    const targetCell = wrapper?.querySelector(".col-mes-actual");
+    if (!wrapper || !targetCell) {
+        alert("Define un mes actual para ubicarlo en el resumen.");
+        return;
+    }
+
+    const offset = Math.max(0, targetCell.offsetLeft - wrapper.clientWidth / 2);
+    wrapper.scrollTo({ left: offset, behavior: "smooth" });
+    targetCell.classList.add("pulse-highlight");
+    setTimeout(() => targetCell.classList.remove("pulse-highlight"), 1200);
+}
+
 // ===== FILTRADO =====
 function applyFilters() {
     let data = state.rawData;
 
-    if (state.currentCC !== "all") {
-        data = data.filter((r) => r.cc === state.currentCC);
+    if (state.currentEmpresa !== "all") {
+        data = data.filter((r) => r.empresa === state.currentEmpresa);
     }
 
-    if (state.currentYear !== "all") {
-        data = data.filter((r) => r.year === Number(state.currentYear));
+    // Filtro por rango de meses
+    if (state.mesDesde) {
+        data = data.filter((r) => r.mesKey >= state.mesDesde);
     }
 
-    if (state.currentMonth !== "all") {
-        data = data.filter((r) => r.month === Number(state.currentMonth));
-    }
-
-    // Filtro por rango de fechas
-    if (state.dateFrom) {
-        data = data.filter((r) => r.fecha >= state.dateFrom);
-    }
-
-    if (state.dateTo) {
-        data = data.filter((r) => r.fecha <= state.dateTo);
+    if (state.mesHasta) {
+        data = data.filter((r) => r.mesKey <= state.mesHasta);
     }
 
     state.filteredData = data;
 
+    // Actualizar headers dinámicos (sincronizan con el filtro de fechas)
+    buildDynamicHeaders();
+    
     // Render all views
     renderSummaryTable();
     renderMovementsTable();
     renderDashboard();
 }
 
-// ===== COLUMNAS DE MESES (Mar 2025 - Dic 2026) =====
+// ===== COLUMNAS DE MESES (dinámicas basadas en datos) =====
 function getColumns() {
-    const cols = [];
-    // 2025: Mar - Dic (meses 2-11)
-    for (let m = 2; m <= 11; m++) {
-        cols.push({ year: 2025, month: m });
+    if (state.meses.length === 0) return [];
+    
+    // Filtrar meses según filtros aplicados
+    let mesesFiltrados = state.meses;
+    if (state.mesDesde) {
+        mesesFiltrados = mesesFiltrados.filter(m => m >= state.mesDesde);
     }
-    // 2026: Ene - Dic (meses 0-11)
-    for (let m = 0; m <= 11; m++) {
-        cols.push({ year: 2026, month: m });
+    if (state.mesHasta) {
+        mesesFiltrados = mesesFiltrados.filter(m => m <= state.mesHasta);
     }
-    return cols;
+    
+    return mesesFiltrados.map(mesKey => {
+        const year = Math.floor(mesKey / 100);
+        const month = (mesKey % 100) - 1;
+        return { year, month, mesKey };
+    });
+}
+
+function getSummarySeries() {
+    const columns = getColumns();
+    if (columns.length === 0) return null;
+
+    const saldosIniciales = columns.map((col) => sumByType("00_Saldos", col.year, col.month));
+    const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
+    const egresos = columns.map((col) => sumByType("02_Egreso", col.year, col.month));
+    const movInternos = columns.map((col) => sumByType("03_Movimiento interno", col.year, col.month));
+
+    const netoMes = columns.map((_, idx) => {
+        if (state.currentEmpresa === "all") {
+            return ingresos[idx] + egresos[idx];
+        }
+        return ingresos[idx] + egresos[idx] + movInternos[idx];
+    });
+
+    const saldoAcumulado = [];
+    let acumulado = saldosIniciales[0] || 0;
+
+    for (let i = 0; i < columns.length; i++) {
+        if (i === 0) {
+            acumulado = saldosIniciales[i] + netoMes[i];
+        } else {
+            acumulado += netoMes[i];
+        }
+        saldoAcumulado.push(acumulado);
+    }
+
+    return { columns, saldosIniciales, ingresos, egresos, movInternos, netoMes, saldoAcumulado };
+}
+
+// Obtener datos desde el inicio hasta el mes actual (para KPIs)
+function getKPISeries() {
+    if (state.meses.length === 0) return null;
+    
+    // Obtener todos los meses desde el inicio hasta el mes actual
+    let mesesParaKPI = [...state.meses];
+    
+    // Si hay un mes actual definido, filtrar solo hasta ese mes
+    if (state.mesActual) {
+        mesesParaKPI = mesesParaKPI.filter(m => m <= state.mesActual);
+    }
+    
+    if (mesesParaKPI.length === 0) return null;
+    
+    const columns = mesesParaKPI.map(mesKey => {
+        const year = Math.floor(mesKey / 100);
+        const month = (mesKey % 100) - 1;
+        return { year, month, mesKey };
+    });
+
+    const saldosIniciales = columns.map((col) => sumByType("00_Saldos", col.year, col.month));
+    const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
+    const egresos = columns.map((col) => sumByType("02_Egreso", col.year, col.month));
+    const movInternos = columns.map((col) => sumByType("03_Movimiento interno", col.year, col.month));
+
+    const netoMes = columns.map((_, idx) => {
+        if (state.currentEmpresa === "all") {
+            return ingresos[idx] + egresos[idx];
+        }
+        return ingresos[idx] + egresos[idx] + movInternos[idx];
+    });
+
+    const saldoAcumulado = [];
+    let acumulado = saldosIniciales[0] || 0;
+
+    for (let i = 0; i < columns.length; i++) {
+        if (i === 0) {
+            acumulado = saldosIniciales[i] + netoMes[i];
+        } else {
+            acumulado += netoMes[i];
+        }
+        saldoAcumulado.push(acumulado);
+    }
+
+    return { columns, saldosIniciales, ingresos, egresos, movInternos, netoMes, saldoAcumulado };
 }
 
 // ===== SUMMARY TABLE =====
@@ -648,62 +1169,48 @@ function renderSummaryTable() {
     const tbody = document.getElementById("summaryBody");
     if (!tbody) return;
 
-    const columns = getColumns();
-    
-    // Datos
-    const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
-    const cargos = columns.map((col) => sumByType("02_Cargo", col.year, col.month));
-    const saldosIniciales = columns.map((col) => sumByType("03_Saldos iniciales", col.year, col.month));
-    const movInternos = columns.map((col) => sumByType("04_Movimiento Interno", col.year, col.month));
-    
-    // Calcular saldo del mes
-    const saldoMes = [];
-    const saldoAcumulado = [];
-    
-    const saldoInicialTotal = saldosIniciales.reduce((acc, v) => acc + v, 0);
-    let acumulado = saldoInicialTotal;
-    
-    for (let i = 0; i < columns.length; i++) {
-        let saldoDelMes;
-        if (state.currentCC === "all") {
-            saldoDelMes = ingresos[i] + cargos[i];
-        } else {
-            saldoDelMes = ingresos[i] + cargos[i] + movInternos[i];
-        }
-        saldoMes.push(saldoDelMes);
-        acumulado += saldoDelMes;
-        saldoAcumulado.push(acumulado);
+    const summary = getSummarySeries();
+    if (!summary) {
+        tbody.innerHTML = `<tr><td class="empty-message">Sin datos para mostrar</td></tr>`;
+        return;
     }
 
-    // Mostrar movimientos internos solo si no es vista "Todos"
-    const movInternosRow = state.currentCC !== "all" ? `
+    const { columns, saldosIniciales, ingresos, egresos, movInternos, netoMes, saldoAcumulado } = summary;
+    
+    // Función para determinar clase del mes actual
+    const getMesActualClass = (idx) => {
+        return state.mesActual && columns[idx].mesKey === state.mesActual ? " col-mes-actual" : "";
+    };
+
+    // Mostrar movimientos internos solo si no es vista "Consolidado"
+    const movInternosRow = state.currentEmpresa !== "all" ? `
         <tr class="row-mov-interno">
-            <td>04_Mov. Interno</td>
-            ${movInternos.map((v) => `<td class="${v < 0 ? "val-negative" : v > 0 ? "val-positive" : ""}">${formatNumber(v)}</td>`).join("")}
+            <td>03_Mov. Interno</td>
+            ${movInternos.map((v, idx) => `<td class="${v < 0 ? "val-negative" : v > 0 ? "val-positive" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
         </tr>
     ` : "";
 
     tbody.innerHTML = `
-        <tr class="row-ingreso">
-            <td>01_Ingreso</td>
-            ${ingresos.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
-        </tr>
-        <tr class="row-cargo">
-            <td>02_Cargo</td>
-            ${cargos.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
-        </tr>
         <tr class="row-saldo-inicial">
-            <td>03_Saldo inicial</td>
-            ${saldosIniciales.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
+            <td><strong>Saldo inicial mes</strong></td>
+            ${saldosIniciales.map((v, idx) => `<td class="${v < 0 ? "val-negative" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
+        </tr>
+        <tr class="row-ingreso">
+            <td><strong>Ingresos</strong></td>
+            ${ingresos.map((v, idx) => `<td class="${v < 0 ? "val-negative" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
+        </tr>
+        <tr class="row-egreso">
+            <td><strong>Egresos</strong></td>
+            ${egresos.map((v, idx) => `<td class="${v < 0 ? "val-negative" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
         </tr>
         ${movInternosRow}
         <tr class="row-saldo-mes">
-            <td>Saldo del Mes</td>
-            ${saldoMes.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
+            <td><strong>Saldo del mes</strong></td>
+            ${netoMes.map((v, idx) => `<td class="${v < 0 ? "val-negative" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
         </tr>
         <tr class="row-saldo-acum">
-            <td>Saldo Acumulado</td>
-            ${saldoAcumulado.map((v) => `<td class="${v < 0 ? "val-negative" : ""}">${formatNumber(v)}</td>`).join("")}
+            <td><strong>Saldo acumulado</strong></td>
+            ${saldoAcumulado.map((v, idx) => `<td class="${v < 0 ? "val-negative" : ""}${getMesActualClass(idx)}">${formatNumber(v)}</td>`).join("")}
         </tr>
     `;
 }
@@ -711,7 +1218,7 @@ function renderSummaryTable() {
 function sumByType(tipo, year, month) {
     return state.filteredData
         .filter((r) => r.tipo === tipo && r.year === year && r.month === month)
-        .reduce((acc, r) => acc + r.monto, 0);
+        .reduce((acc, r) => acc + r.valor, 0);
 }
 
 // ===== MOVEMENTS TABLE (AGRUPACIÓN MULTINIVEL) =====
@@ -722,64 +1229,60 @@ function renderMovementsTable() {
     const columns = getColumns();
     const data = state.filteredData;
 
-    if (!data.length) {
+    if (!data.length || columns.length === 0) {
         tbody.innerHTML = `<tr><td colspan="27">Sin datos para los filtros seleccionados</td></tr>`;
         return;
     }
 
-    const { tipo: groupTipo, item: groupItem, categoria: groupCategoria } = state.groupLevels;
+    const { tipo: groupTipo, grupo: groupGrupo, categoria: groupCategoria } = state.groupLevels;
     
     // Construir estructura jerárquica
-    const hierarchy = buildHierarchy(data, groupTipo, groupItem, groupCategoria);
+    const hierarchy = buildHierarchy(data, groupTipo, groupGrupo, groupCategoria);
     
     let html = "";
     let rowId = 0;
 
     hierarchy.forEach((tipoGroup) => {
         const tipoId = `row-${rowId++}`;
-        const isEgreso = tipoGroup.label.includes("02_Cargo");
+        const isEgreso = tipoGroup.label.includes("02_Egreso");
         
         if (groupTipo) {
-            // Fila nivel 0 (Tipo)
             html += createHierarchyRow(tipoId, null, 0, tipoGroup.label, "", "", "", tipoGroup.totals, columns, tipoGroup.hasChildren, false);
         }
 
-        tipoGroup.children.forEach((itemGroup) => {
-            const itemId = `row-${rowId++}`;
-            const itemParent = groupTipo ? tipoId : null;
-            const itemLevel = groupTipo ? 1 : 0;
+        tipoGroup.children.forEach((grupoGroup) => {
+            const grupoId = `row-${rowId++}`;
+            const grupoParent = groupTipo ? tipoId : null;
+            const grupoLevel = groupTipo ? 1 : 0;
 
-            if (groupItem) {
-                // Fila nivel 1 (Item)
-                html += createHierarchyRow(itemId, itemParent, itemLevel, groupTipo ? "" : tipoGroup.label, itemGroup.label, "", "", itemGroup.totals, columns, itemGroup.hasChildren, false);
+            if (groupGrupo) {
+                html += createHierarchyRow(grupoId, grupoParent, grupoLevel, groupTipo ? "" : tipoGroup.label, grupoGroup.label, "", "", grupoGroup.totals, columns, grupoGroup.hasChildren, false);
             }
 
-            itemGroup.children.forEach((catGroup) => {
+            grupoGroup.children.forEach((catGroup) => {
                 const catId = `row-${rowId++}`;
-                const catParent = groupItem ? itemId : (groupTipo ? tipoId : null);
+                const catParent = groupGrupo ? grupoId : (groupTipo ? tipoId : null);
                 let catLevel = 0;
                 if (groupTipo) catLevel++;
-                if (groupItem) catLevel++;
+                if (groupGrupo) catLevel++;
 
                 if (groupCategoria) {
-                    // Fila nivel 2 (Categoría) - Pasar isEgreso para colorear rojo
                     html += createHierarchyRow(catId, catParent, catLevel, 
-                        (!groupTipo && !groupItem) ? tipoGroup.label : "", 
-                        (!groupItem) ? itemGroup.label : "", 
+                        (!groupTipo && !groupGrupo) ? tipoGroup.label : "", 
+                        (!groupGrupo) ? grupoGroup.label : "", 
                         catGroup.label, "", catGroup.totals, columns, catGroup.hasChildren, isEgreso);
                 }
 
                 catGroup.children.forEach((subcat) => {
-                    const subcatParent = groupCategoria ? catId : (groupItem ? itemId : (groupTipo ? tipoId : null));
+                    const subcatParent = groupCategoria ? catId : (groupGrupo ? grupoId : (groupTipo ? tipoId : null));
                     let subcatLevel = 0;
                     if (groupTipo) subcatLevel++;
-                    if (groupItem) subcatLevel++;
+                    if (groupGrupo) subcatLevel++;
                     if (groupCategoria) subcatLevel++;
 
-                    // Fila nivel 3 (Subcategoría - detalle)
                     html += createHierarchyRow(`row-${rowId++}`, subcatParent, subcatLevel,
                         (!groupTipo) ? tipoGroup.label : "",
-                        (!groupItem) ? itemGroup.label : "",
+                        (!groupGrupo) ? grupoGroup.label : "",
                         (!groupCategoria) ? catGroup.label : "",
                         subcat.label, subcat.totals, columns, false, false);
                 });
@@ -791,7 +1294,7 @@ function renderMovementsTable() {
     setupRowExpanders();
 }
 
-function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
+function buildHierarchy(data, groupTipo, groupGrupo, groupCategoria) {
     const columns = getColumns();
     
     // Agrupar por Tipo
@@ -804,34 +1307,31 @@ function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
     });
 
     const result = [];
-
-    // Ordenar tipos ascendente
     const sortedTipos = Array.from(tipoMap.keys()).sort((a, b) => a.localeCompare(b));
 
     sortedTipos.forEach((tipoKey) => {
         const tipoRows = tipoMap.get(tipoKey);
         const tipoTotals = calcTotals(tipoRows, columns);
         
-        // Agrupar por Item
-        const itemMap = new Map();
+        // Agrupar por Grupo
+        const grupoMap = new Map();
         tipoRows.forEach((row) => {
-            if (!itemMap.has(row.item)) {
-                itemMap.set(row.item, []);
+            if (!grupoMap.has(row.grupo)) {
+                grupoMap.set(row.grupo, []);
             }
-            itemMap.get(row.item).push(row);
+            grupoMap.get(row.grupo).push(row);
         });
 
-        const itemChildren = [];
-        // Ordenar items ascendente
-        const sortedItems = Array.from(itemMap.keys()).sort((a, b) => a.localeCompare(b));
+        const grupoChildren = [];
+        const sortedGrupos = Array.from(grupoMap.keys()).sort((a, b) => a.localeCompare(b));
         
-        sortedItems.forEach((itemKey) => {
-            const itemRows = itemMap.get(itemKey);
-            const itemTotals = calcTotals(itemRows, columns);
+        sortedGrupos.forEach((grupoKey) => {
+            const grupoRows = grupoMap.get(grupoKey);
+            const grupoTotals = calcTotals(grupoRows, columns);
 
             // Agrupar por Categoría
             const catMap = new Map();
-            itemRows.forEach((row) => {
+            grupoRows.forEach((row) => {
                 if (!catMap.has(row.categoria)) {
                     catMap.set(row.categoria, []);
                 }
@@ -839,7 +1339,6 @@ function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
             });
 
             const catChildren = [];
-            // Ordenar categorías ascendente
             const sortedCats = Array.from(catMap.keys()).sort((a, b) => a.localeCompare(b));
             
             sortedCats.forEach((catKey) => {
@@ -856,7 +1355,6 @@ function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
                 });
 
                 const subcatChildren = [];
-                // Ordenar subcategorías ascendente
                 const sortedSubcats = Array.from(subcatMap.keys()).sort((a, b) => a.localeCompare(b));
                 
                 sortedSubcats.forEach((subcatKey) => {
@@ -877,9 +1375,9 @@ function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
                 });
             });
 
-            itemChildren.push({
-                label: itemKey,
-                totals: itemTotals,
+            grupoChildren.push({
+                label: grupoKey,
+                totals: grupoTotals,
                 children: catChildren,
                 hasChildren: catChildren.length > 0
             });
@@ -888,8 +1386,8 @@ function buildHierarchy(data, groupTipo, groupItem, groupCategoria) {
         result.push({
             label: tipoKey,
             totals: tipoTotals,
-            children: itemChildren,
-            hasChildren: itemChildren.length > 0
+            children: grupoChildren,
+            hasChildren: grupoChildren.length > 0
         });
     });
 
@@ -900,15 +1398,13 @@ function calcTotals(rows, columns) {
     return columns.map((col) => {
         return rows
             .filter((r) => r.year === col.year && r.month === col.month)
-            .reduce((acc, r) => acc + r.monto, 0);
+            .reduce((acc, r) => acc + r.valor, 0);
     });
 }
 
-function createHierarchyRow(id, parentId, level, tipo, item, categoria, subcategoria, totals, columns, hasChildren, isEgreso = false) {
+function createHierarchyRow(id, parentId, level, tipo, grupo, categoria, subcategoria, totals, columns, hasChildren, isEgreso = false) {
     const parentAttr = parentId ? `data-parent="${parentId}"` : "";
-    // Por defecto: niveles 0 y 1 visibles, niveles 2 y 3 ocultos
     const hiddenClass = level >= 2 ? "row-hidden" : "";
-    // Nivel 1 empieza colapsado (sus hijos nivel 2 están ocultos)
     const collapsedClass = (level === 1 && hasChildren) ? "row-collapsed" : "";
     const expandIcon = hasChildren ? `<span class="expand-icon">▾</span>` : "";
     const egresoClass = (level === 2 && isEgreso) ? "row-egreso" : "";
@@ -917,13 +1413,15 @@ function createHierarchyRow(id, parentId, level, tipo, item, categoria, subcateg
         <tr class="row-level-${level} ${egresoClass} ${hiddenClass} ${collapsedClass}" data-id="${id}" data-level="${level}" ${parentAttr}>
             <td class="col-expand">${expandIcon}</td>
             <td class="col-tipo">${tipo}</td>
-            <td class="col-item">${item}</td>
+            <td class="col-grupo">${grupo}</td>
             <td class="col-categoria">${categoria}</td>
             <td class="col-subcategoria">${subcategoria}</td>
             ${totals.map((v, idx) => {
                 const isNeg = v < 0;
-                const is2026 = idx >= 10;
-                return `<td class="col-value ${isNeg ? "val-negative" : ""} ${is2026 ? "col-2026" : ""}">${v !== 0 ? formatNumber(v) : ""}</td>`;
+                const firstYear = columns[0]?.year;
+                const is2026 = columns[idx]?.year > firstYear;
+                const isMesActual = state.mesActual && columns[idx]?.mesKey === state.mesActual;
+                return `<td class="col-value ${isNeg ? "val-negative" : ""} ${is2026 ? "col-2026" : ""} ${isMesActual ? "col-mes-actual" : ""}">${v !== 0 ? formatNumber(v) : ""}</td>`;
             }).join("")}
         </tr>
     `;
@@ -933,7 +1431,6 @@ function setupRowExpanders() {
     const tbody = document.getElementById("movementsBody");
     if (!tbody) return;
 
-    // Remove old listeners by cloning
     const newTbody = tbody.cloneNode(true);
     tbody.parentNode.replaceChild(newTbody, tbody);
 
@@ -947,7 +1444,6 @@ function setupRowExpanders() {
         const rowId = row.dataset.id;
         const isCollapsed = row.classList.toggle("row-collapsed");
 
-        // Toggle direct children and their descendants
         toggleChildren(rowId, isCollapsed);
     });
 }
@@ -966,23 +1462,163 @@ function toggleChildren(parentId, hide) {
 function renderDashboard() {
     renderKPIs();
     renderLineChart();
+    renderNetFlowChart();
     renderDonutChart();
     renderHorizontalChart();
-    renderWaterfallChart();
     renderParetoSection();
 }
 
 function renderKPIs() {
-    const data = state.filteredData;
-    const saldoInicial = data.filter((r) => r.tipo === "03_Saldos iniciales").reduce((acc, r) => acc + r.monto, 0);
-    const ingresos = data.filter((r) => r.tipo === "01_Ingreso").reduce((acc, r) => acc + r.monto, 0);
-    const egresos = data.filter((r) => r.tipo === "02_Cargo").reduce((acc, r) => acc + Math.abs(r.monto), 0);
-    const saldoFinal = saldoInicial + ingresos - egresos;
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    
+    const setHtml = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = value;
+    };
 
-    document.getElementById("kpiSaldoInicial").textContent = formatCurrency(saldoInicial);
-    document.getElementById("kpiEntradas").textContent = formatCurrency(ingresos);
-    document.getElementById("kpiSalidas").textContent = formatCurrency(-egresos);
-    document.getElementById("kpiFinal").textContent = formatCurrency(saldoFinal);
+    // Usar datos según el modo seleccionado
+    const kpiData = state.kpiUseFullRange ? getKPISeries() : getSummarySeries();
+    if (!kpiData || state.filteredData.length === 0) {
+        ["kpiIngresosValue", "kpiIngresosSub", "kpiEgresosValue", "kpiEgresosSub", "kpiNetoValue", "kpiNetoSub", "kpiSaldoValue", "kpiSaldoSub", "kpiMesesValue", "kpiMesesSub"].forEach((id, idx) => {
+            setText(id, idx % 2 === 0 ? "-" : "");
+        });
+        return;
+    }
+
+    const { columns, ingresos, egresos, netoMes, saldoAcumulado, saldosIniciales } = kpiData;
+
+    const totalIngresos = ingresos.reduce((acc, val) => acc + val, 0);
+    const totalEgresos = egresos.reduce((acc, val) => acc + val, 0);
+    const totalEgresosAbs = Math.abs(totalEgresos);
+    const netoTotal = netoMes.reduce((acc, val) => acc + val, 0);
+    const saldoInicial = saldosIniciales[0] || 0;
+    const saldoFinal = saldoAcumulado[saldoAcumulado.length - 1] || 0;
+    const mesesAnalizados = columns.length;
+    const promedioIngresos = mesesAnalizados ? totalIngresos / mesesAnalizados : 0;
+    const promedioEgresos = mesesAnalizados ? totalEgresosAbs / mesesAnalizados : 0;
+    const cobertura = totalEgresosAbs === 0 ? null : totalIngresos / totalEgresosAbs;
+
+    // Calcular meses reales vs proyectados
+    let reales = mesesAnalizados;
+    let proyectados = 0;
+    if (state.mesActual) {
+        const idx = columns.findIndex(col => col.mesKey === state.mesActual);
+        if (idx >= 0) {
+            reales = idx + 1;
+            proyectados = Math.max(0, mesesAnalizados - reales);
+        }
+    }
+
+    setText("kpiIngresosValue", formatCurrency(totalIngresos));
+    setText("kpiIngresosSub", `Prom. mensual ${formatCurrency(promedioIngresos || 0)}`);
+    setText("kpiEgresosValue", formatCurrency(totalEgresosAbs));
+    setText("kpiEgresosSub", `Prom. mensual ${formatCurrency(promedioEgresos || 0)}`);
+    setText("kpiNetoValue", formatCurrency(netoTotal));
+    setText("kpiNetoSub", cobertura ? `Cobertura ${cobertura.toFixed(2)}x` : "Cobertura —");
+    setText("kpiSaldoValue", formatCurrency(saldoFinal));
+    setText("kpiSaldoSub", `Saldo inicial ${formatCurrency(saldoInicial)}`);
+    setText("kpiMesesValue", `${mesesAnalizados} ${mesesAnalizados === 1 ? "mes" : "meses"}`);
+    setText("kpiMesesSub", state.kpiUseFullRange ? `Inicio → Mes actual` : `Reales ${reales} · Proy. ${proyectados}`);
+}
+
+function formatVariation(pct, inverse = false) {
+    if (pct === 0 || isNaN(pct)) return "";
+    const isPositive = inverse ? pct < 0 : pct > 0;
+    const icon = pct > 0 ? "fa-arrow-up" : "fa-arrow-down";
+    const cssClass = isPositive ? "positive" : "negative";
+    return `<span class="kpi-variation ${cssClass}"><i class="fa-solid ${icon}"></i> ${Math.abs(pct).toFixed(1)}%</span>`;
+}
+
+function formatCurrencyCompact(value) {
+    const abs = Math.abs(value);
+    if (abs >= 1e9) return `$${(value / 1e9).toFixed(1)}MM`;
+    if (abs >= 1e6) return `$${(value / 1e6).toFixed(1)}M`;
+    if (abs >= 1e3) return `$${(value / 1e3).toFixed(0)}K`;
+    return formatCurrency(value);
+}
+
+function renderAlerts(summary, cobertura, saldoFinal, netoMes, avgVariation) {
+    const alertsList = document.getElementById("alertsList");
+    const alertsCount = document.getElementById("alertsCount");
+    if (!alertsList) return;
+    
+    const alerts = [];
+    
+    // Alerta: Cobertura baja
+    if (cobertura !== null && cobertura < 1) {
+        alerts.push({
+            type: 'danger',
+            icon: 'fa-circle-exclamation',
+            message: `Cobertura crítica: los egresos superan a los ingresos (${cobertura.toFixed(2)}x)`
+        });
+    } else if (cobertura !== null && cobertura < 1.1) {
+        alerts.push({
+            type: 'warning',
+            icon: 'fa-triangle-exclamation',
+            message: `Cobertura ajustada: margen estrecho entre ingresos y egresos (${cobertura.toFixed(2)}x)`
+        });
+    }
+    
+    // Alerta: Saldo negativo
+    if (saldoFinal < 0) {
+        alerts.push({
+            type: 'danger',
+            icon: 'fa-circle-xmark',
+            message: `Saldo acumulado negativo: ${formatCurrency(saldoFinal)}`
+        });
+    }
+    
+    // Alerta: Tendencia negativa
+    if (avgVariation < -10) {
+        alerts.push({
+            type: 'warning',
+            icon: 'fa-arrow-trend-down',
+            message: `Tendencia negativa: variación promedio de ${avgVariation.toFixed(1)}%`
+        });
+    }
+    
+    // Alerta: Muchos meses negativos
+    const negativeCount = netoMes.filter(n => n < 0).length;
+    if (negativeCount > netoMes.length / 2) {
+        alerts.push({
+            type: 'warning',
+            icon: 'fa-chart-line',
+            message: `${negativeCount} de ${netoMes.length} meses con flujo negativo`
+        });
+    }
+    
+    // Alerta positiva: Buen rendimiento
+    if (cobertura !== null && cobertura >= 1.2 && avgVariation >= 0) {
+        alerts.push({
+            type: 'success',
+            icon: 'fa-circle-check',
+            message: `Flujo saludable con cobertura de ${cobertura.toFixed(2)}x`
+        });
+    }
+    
+    // Información: Sin alertas críticas
+    if (alerts.length === 0) {
+        alerts.push({
+            type: 'info',
+            icon: 'fa-circle-info',
+            message: 'Sin alertas críticas en el período analizado'
+        });
+    }
+    
+    alertsList.innerHTML = alerts.map(alert => `
+        <div class="alert-item alert-${alert.type}">
+            <i class="fa-solid ${alert.icon}"></i>
+            <span>${alert.message}</span>
+        </div>
+    `).join('');
+    
+    if (alertsCount) {
+        const criticalCount = alerts.filter(a => a.type === 'danger' || a.type === 'warning').length;
+        alertsCount.textContent = criticalCount.toString();
+    }
 }
 
 function renderLineChart() {
@@ -990,110 +1626,171 @@ function renderLineChart() {
     if (!ctx) return;
     destroyChart("line");
 
-    const columns = getColumns();
-    
-    // Datos
-    const ingresos = columns.map((col) => sumByType("01_Ingreso", col.year, col.month));
-    const egresos = columns.map((col) => Math.abs(sumByType("02_Cargo", col.year, col.month)));
+    const summary = getSummarySeries();
+    if (!summary) return;
 
-    // Crear gradientes
-    const ctxCanvas = ctx.getContext('2d');
-    const gradientGreen = ctxCanvas.createLinearGradient(0, 0, 0, 300);
-    gradientGreen.addColorStop(0, 'rgba(0, 200, 83, 0.4)');
-    gradientGreen.addColorStop(1, 'rgba(0, 200, 83, 0.02)');
+    const columns = summary.columns;
+    const ingresos = summary.ingresos;
+    const egresos = summary.egresos.map((value) => Math.abs(value));
+    const saldoAcumulado = summary.saldoAcumulado;
 
-    const gradientRed = ctxCanvas.createLinearGradient(0, 0, 0, 300);
-    gradientRed.addColorStop(0, 'rgba(211, 47, 47, 0.4)');
-    gradientRed.addColorStop(1, 'rgba(211, 47, 47, 0.02)');
+    // Identificar índice del mes actual para distinguir real vs proyección
+    let mesActualIdx = -1;
+    if (state.mesActual) {
+        mesActualIdx = columns.findIndex(c => c.mesKey === state.mesActual);
+    }
+
+    // Colores corporativos CRAMSA
+    const colorIngresos = "#00a878";  // Verde éxito
+    const colorEgresos = "#e63946";   // Rojo
+    const colorSaldo = cramsaPalette.secondary;  // Azul CRAMSA
 
     const datasets = [
         {
             label: "Ingresos",
             data: ingresos,
-            borderColor: "#00c853",
-            backgroundColor: gradientGreen,
+            borderColor: colorIngresos,
+            backgroundColor: 'rgba(0, 168, 120, 0.12)',
             fill: true,
             tension: 0.4,
             borderWidth: 3,
-            pointRadius: 4,
-            pointBackgroundColor: "#00c853",
+            pointRadius: 5,
+            pointBackgroundColor: colorIngresos,
             pointBorderColor: "#fff",
             pointBorderWidth: 2,
             pointHoverRadius: 7,
-            pointHoverBackgroundColor: "#00c853",
-            pointHoverBorderColor: "#fff",
-            pointHoverBorderWidth: 3
+            yAxisID: 'y'
         },
         {
             label: "Egresos",
             data: egresos,
-            borderColor: "#d32f2f",
-            backgroundColor: gradientRed,
+            borderColor: colorEgresos,
+            backgroundColor: 'rgba(230, 57, 70, 0.12)',
             fill: true,
             tension: 0.4,
             borderWidth: 3,
-            pointRadius: 4,
-            pointBackgroundColor: "#d32f2f",
+            pointRadius: 5,
+            pointBackgroundColor: colorEgresos,
             pointBorderColor: "#fff",
             pointBorderWidth: 2,
             pointHoverRadius: 7,
-            pointHoverBackgroundColor: "#d32f2f",
-            pointHoverBorderColor: "#fff",
-            pointHoverBorderWidth: 3
+            yAxisID: 'y'
+        },
+        {
+            label: "Saldo Acumulado",
+            data: saldoAcumulado,
+            borderColor: colorSaldo,
+            backgroundColor: 'rgba(0, 123, 165, 0.1)',
+            fill: true,
+            tension: 0.4,
+            borderWidth: 3.5,
+            borderDash: [],
+            pointRadius: 6,
+            pointBackgroundColor: colorSaldo,
+            pointBorderColor: "#fff",
+            pointBorderWidth: 2,
+            pointHoverRadius: 8,
+            yAxisID: 'y1'
         }
     ];
 
     state.charts.line = new Chart(ctx, {
         type: "line",
         data: {
-            labels: columns.map((c) => `${monthLabels[c.month]} ${String(c.year).slice(-2)}`),
+            labels: columns.map((c) => `${monthLabels[c.month].substring(0, 3).toUpperCase()} ${String(c.year).slice(-2)}`),
             datasets
         },
         options: {
             responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 2.5,
             animation: false,
-            interaction: {
-                intersect: false,
-                mode: 'index'
-            },
+            resizeDelay: 100,
+            interaction: { intersect: false, mode: 'index' },
             plugins: {
-                legend: {
-                    position: "top",
-                    labels: {
+                legend: { 
+                    position: "top", 
+                    align: "end",
+                    labels: { 
                         usePointStyle: true,
-                        padding: 20,
-                        font: { weight: '500' }
-                    }
+                        pointStyle: 'circle',
+                        padding: 20, 
+                        font: { size: 12, family: "'Plus Jakarta Sans', sans-serif", weight: '600' },
+                        color: cramsaPalette.navy
+                    } 
                 },
                 tooltip: {
-                    backgroundColor: 'rgba(26, 43, 60, 0.95)',
-                    titleFont: { size: 13, weight: '600' },
-                    bodyFont: { size: 12 },
-                    padding: 12,
-                    cornerRadius: 8,
-                    displayColors: true,
-                    callbacks: {
-                        label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`
+                    backgroundColor: cramsaPalette.navy,
+                    titleColor: '#fff',
+                    bodyColor: '#e2e8f0',
+                    padding: 14,
+                    cornerRadius: 10,
+                    titleFont: { size: 13, weight: '700', family: "'Plus Jakarta Sans', sans-serif" },
+                    bodyFont: { size: 12, family: "'JetBrains Mono', monospace" },
+                    bodySpacing: 8,
+                    boxPadding: 6,
+                    callbacks: { 
+                        label: (ctx) => `  ${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`
                     }
                 }
             },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    stacked: false,
-                    grid: { color: 'rgba(0,0,0,0.05)' },
-                    ticks: { callback: (v) => formatAxis(v), font: { size: 11 } }
+                y: { 
+                    type: 'linear',
+                    position: 'left',
+                    beginAtZero: true, 
+                    grid: { color: 'rgba(19, 41, 75, 0.06)', drawBorder: false }, 
+                    border: { display: false },
+                    ticks: { 
+                        callback: (v) => formatAxis(v), 
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.teal,
+                        padding: 10
+                    },
+                    title: { 
+                        display: true, 
+                        text: 'Flujo mensual', 
+                        font: { size: 11, weight: '600', family: "'Plus Jakarta Sans', sans-serif" },
+                        color: cramsaPalette.navy
+                    }
                 },
-                x: {
-                    grid: { display: false },
-                    ticks: { font: { size: 10 }, maxRotation: 45 }
+                y1: {
+                    type: 'linear',
+                    position: 'right',
+                    grid: { drawOnChartArea: false, drawBorder: false },
+                    border: { display: false },
+                    ticks: { 
+                        callback: (v) => formatAxis(v), 
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.teal,
+                        padding: 10
+                    },
+                    title: { 
+                        display: true, 
+                        text: 'Saldo acumulado', 
+                        font: { size: 11, weight: '600', family: "'Plus Jakarta Sans', sans-serif" },
+                        color: cramsaPalette.navy
+                    }
+                },
+                x: { 
+                    grid: { display: false, drawBorder: false }, 
+                    border: { display: false },
+                    ticks: { 
+                        maxRotation: 0,
+                        font: { size: 11, family: "'Plus Jakarta Sans', sans-serif", weight: '500' },
+                        color: cramsaPalette.navy,
+                        padding: 10
+                    } 
                 }
             }
         }
     });
 
     const badge = document.getElementById("lineChartBadge");
-    if (badge) badge.textContent = state.currentYear !== "all" ? state.currentYear : "2025-2026";
+    if (badge) {
+        const years = [...new Set(columns.map(c => c.year))].sort();
+        badge.textContent = years.length > 1 ? `${years[0]}-${years[years.length-1]}` : years[0];
+    }
 }
 
 function renderDonutChart() {
@@ -1104,11 +1801,10 @@ function renderDonutChart() {
     const incomes = state.filteredData.filter((r) => r.tipo === "01_Ingreso");
     const grouped = groupByCategory(incomes);
 
-    const colors = [
-        '#003978', '#0066cc', '#00bcd4', '#00c853', 
-        '#ff9800', '#e91e63', '#9c27b0', '#795548',
-        '#607d8b', '#f44336'
-    ];
+    if (grouped.length === 0) return;
+
+    // Paleta de colores corporativa CRAMSA
+    const colors = cramsaPalette.chartColors;
 
     state.charts.donut = new Chart(ctx, {
         type: "doughnut",
@@ -1119,35 +1815,99 @@ function renderDonutChart() {
                 backgroundColor: colors,
                 borderWidth: 3,
                 borderColor: '#fff',
-                hoverBorderWidth: 4,
-                hoverOffset: 8
+                hoverOffset: 6
             }]
         },
         options: {
             responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 1.2,
             animation: false,
-            cutout: '60%',
+            resizeDelay: 100,
+            cutout: '65%',
             plugins: {
-                legend: {
-                    position: "bottom",
-                    labels: {
+                legend: { 
+                    position: "bottom", 
+                    labels: { 
                         usePointStyle: true,
-                        padding: 15,
-                        font: { size: 11, weight: '500' }
-                    }
+                        pointStyle: 'circle',
+                        padding: 14, 
+                        font: { size: 11, family: "'Plus Jakarta Sans', sans-serif", weight: '500' },
+                        color: cramsaPalette.navy
+                    } 
                 },
                 tooltip: {
-                    backgroundColor: 'rgba(26, 43, 60, 0.95)',
-                    titleFont: { size: 13, weight: '600' },
-                    bodyFont: { size: 12 },
-                    padding: 12,
-                    cornerRadius: 8,
+                    backgroundColor: cramsaPalette.navy,
+                    padding: 14,
+                    cornerRadius: 10,
+                    titleFont: { size: 12, weight: '700', family: "'Plus Jakarta Sans', sans-serif" },
+                    bodyFont: { size: 12, family: "'JetBrains Mono', monospace" },
                     callbacks: {
                         label: (ctx) => {
                             const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
                             const pct = ((ctx.raw / total) * 100).toFixed(1);
-                            return `${ctx.label}: ${formatCurrency(ctx.raw)} (${pct}%)`;
+                            return `${formatCurrency(ctx.raw)} (${pct}%)`;
                         }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function renderNetFlowChart() {
+    const ctx = document.getElementById("netFlowChart");
+    if (!ctx) return;
+    destroyChart("netFlow");
+
+    const summary = getSummarySeries();
+    if (!summary) return;
+
+    const labels = summary.columns.map((col) => formatMesDisplay(col.year, col.month));
+    const netSeries = summary.netoMes;
+    const colors = netSeries.map((value) => value >= 0 ? "rgba(0, 168, 120, 0.7)" : "rgba(230, 57, 70, 0.75)");
+
+    state.charts.netFlow = new Chart(ctx, {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [{
+                label: "Flujo neto",
+                data: netSeries,
+                backgroundColor: colors,
+                borderRadius: 8,
+                borderSkipped: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 1.5,
+            animation: false,
+            resizeDelay: 100,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: cramsaPalette.navy,
+                    callbacks: {
+                        label: (ctx) => formatCurrency(ctx.raw)
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: {
+                        font: { size: 11, family: "'Plus Jakarta Sans', sans-serif" },
+                        color: cramsaPalette.navy
+                    }
+                },
+                y: {
+                    grid: { color: "rgba(19, 41, 75, 0.08)" },
+                    ticks: {
+                        callback: (val) => formatAxis(val),
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.tealDark
                     }
                 }
             }
@@ -1160,38 +1920,56 @@ function renderHorizontalChart() {
     if (!ctx) return;
     destroyChart("horizontal");
 
-    const cargos = state.filteredData.filter((r) => r.tipo === "02_Cargo");
-    const grouped = groupByCategory(cargos).slice(0, 8);
+    // Determinar qué datos usar según el modo del switch KPI
+    let egresos;
+    if (state.kpiUseFullRange) {
+        // Modo "Inicio → Mes actual": usar todos los datos (filtrados por empresa) desde el inicio hasta mes actual
+        egresos = state.rawData.filter((r) => {
+            const empresaMatch = state.currentEmpresa === "all" || r.empresa === state.currentEmpresa;
+            const mesMatch = state.mesActual ? r.mesKey <= state.mesActual : true;
+            return r.tipo === "02_Egreso" && empresaMatch && mesMatch;
+        });
+    } else {
+        // Modo "Meses del rango": usar todo el rango seleccionado (incluyendo proyecciones si están en el rango)
+        egresos = state.filteredData.filter((r) => r.tipo === "02_Egreso");
+    }
+    
+    const grouped = groupByCategory(egresos).slice(0, 8);
 
-    // Crear gradiente para cada barra
-    const ctxCanvas = ctx.getContext('2d');
-    const gradientRed = ctxCanvas.createLinearGradient(0, 0, 400, 0);
-    gradientRed.addColorStop(0, '#d32f2f');
-    gradientRed.addColorStop(1, '#ff5252');
+    if (grouped.length === 0) return;
+
+    // Colores degradados corporativos (del naranja CRAMSA al marrón)
+    const colors = grouped.map((_, i) => {
+        const intensity = 1 - (i * 0.08);
+        return `rgba(230, 57, 70, ${intensity})`;
+    });
 
     state.charts.horizontal = new Chart(ctx, {
         type: "bar",
         data: {
-            labels: grouped.map((g) => g.label.length > 20 ? g.label.slice(0, 18) + '...' : g.label),
+            labels: grouped.map((g) => g.label.length > 25 ? g.label.slice(0, 23) + '...' : g.label),
             datasets: [{
                 data: grouped.map((g) => g.value),
-                backgroundColor: gradientRed,
+                backgroundColor: colors,
                 borderRadius: 6,
-                borderSkipped: false,
                 barThickness: 20
             }]
         },
         options: {
             indexAxis: "y",
             responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 1.2,
+            animation: false,
+            resizeDelay: 100,
             plugins: {
                 legend: { display: false },
                 tooltip: {
-                    backgroundColor: 'rgba(26, 43, 60, 0.95)',
-                    titleFont: { size: 13, weight: '600' },
-                    bodyFont: { size: 12 },
-                    padding: 12,
-                    cornerRadius: 8,
+                    backgroundColor: cramsaPalette.navy,
+                    padding: 14,
+                    cornerRadius: 10,
+                    titleFont: { size: 12, weight: '700', family: "'Plus Jakarta Sans', sans-serif" },
+                    bodyFont: { size: 12, family: "'JetBrains Mono', monospace" },
                     callbacks: {
                         title: (items) => grouped[items[0].dataIndex].label,
                         label: (ctx) => `Gasto: ${formatCurrency(-ctx.raw)}`
@@ -1199,109 +1977,22 @@ function renderHorizontalChart() {
                 }
             },
             scales: {
-                x: {
-                    grid: { color: 'rgba(0,0,0,0.05)' },
-                    ticks: { callback: (v) => formatAxis(v), font: { size: 11 } }
+                x: { 
+                    grid: { color: 'rgba(19, 41, 75, 0.06)', drawBorder: false },
+                    border: { display: false },
+                    ticks: { 
+                        callback: (v) => formatAxis(v),
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.teal
+                    } 
                 },
-                y: {
-                    grid: { display: false },
-                    ticks: { font: { size: 11 } }
-                }
-            }
-        }
-    });
-}
-
-function renderWaterfallChart() {
-    const ctx = document.getElementById("waterfallChart");
-    if (!ctx) return;
-    destroyChart("waterfall");
-
-    const columns = getColumns();
-    
-    // Flujo neto
-    const netSeries = columns.map((col) => {
-        const ing = sumByType("01_Ingreso", col.year, col.month);
-        const egr = sumByType("02_Cargo", col.year, col.month);
-        return ing + egr;
-    });
-
-    let cumulative = 0;
-    const cumulativeData = netSeries.map((v) => {
-        cumulative += v;
-        return cumulative;
-    });
-
-    const datasets = [
-        {
-            type: "line",
-            label: "Saldo Acumulado",
-            data: cumulativeData,
-            borderColor: "#0097a7",
-            backgroundColor: "rgba(0, 151, 167, 0.1)",
-            borderWidth: 4,
-            fill: false,
-            tension: 0.3,
-            order: 0,
-            pointRadius: 5,
-            pointBackgroundColor: "#0097a7",
-            pointBorderColor: "#fff",
-            pointBorderWidth: 2,
-            pointHoverRadius: 8,
-            pointHoverBorderWidth: 3
-        },
-        {
-            type: "bar",
-            label: "Flujo Mensual",
-            data: netSeries,
-            backgroundColor: netSeries.map((v) => v >= 0 ? "rgba(0, 200, 83, 0.85)" : "rgba(211, 47, 47, 0.85)"),
-            borderColor: netSeries.map((v) => v >= 0 ? "#00c853" : "#d32f2f"),
-            borderWidth: 2,
-            borderRadius: 6,
-            order: 1
-        }
-    ];
-
-    state.charts.waterfall = new Chart(ctx, {
-        data: {
-            labels: columns.map((c) => `${monthLabels[c.month]} ${String(c.year).slice(-2)}`),
-            datasets
-        },
-        options: {
-            responsive: true,
-            animation: false,
-            interaction: {
-                intersect: false,
-                mode: 'index'
-            },
-            plugins: {
-                legend: {
-                    position: "top",
-                    labels: {
-                        usePointStyle: true,
-                        padding: 20,
-                        font: { weight: '500' }
+                y: { 
+                    grid: { display: false, drawBorder: false },
+                    border: { display: false },
+                    ticks: {
+                        font: { size: 11, family: "'Plus Jakarta Sans', sans-serif", weight: '500' },
+                        color: cramsaPalette.navy
                     }
-                },
-                tooltip: {
-                    backgroundColor: 'rgba(26, 43, 60, 0.95)',
-                    titleFont: { size: 13, weight: '600' },
-                    bodyFont: { size: 12 },
-                    padding: 12,
-                    cornerRadius: 8,
-                    callbacks: {
-                        label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}`
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    grid: { color: 'rgba(0,0,0,0.05)' },
-                    ticks: { callback: (v) => formatAxis(v), font: { size: 11 } }
-                },
-                x: {
-                    grid: { display: false },
-                    ticks: { font: { size: 10 }, maxRotation: 45 }
                 }
             }
         }
@@ -1313,8 +2004,21 @@ function renderParetoSection() {
     const ctx = document.getElementById("paretoChart");
     if (!tbody || !ctx) return;
 
-    const cargos = state.filteredData.filter((r) => r.tipo === "02_Cargo");
-    const grouped = groupByCategory(cargos);
+    // Determinar qué datos usar según el modo del switch KPI
+    let egresos;
+    if (state.kpiUseFullRange) {
+        // Modo "Inicio → Mes actual": usar todos los datos (filtrados por empresa) desde el inicio hasta mes actual
+        egresos = state.rawData.filter((r) => {
+            const empresaMatch = state.currentEmpresa === "all" || r.empresa === state.currentEmpresa;
+            const mesMatch = state.mesActual ? r.mesKey <= state.mesActual : true;
+            return r.tipo === "02_Egreso" && empresaMatch && mesMatch;
+        });
+    } else {
+        // Modo "Meses del rango": usar todo el rango seleccionado (incluyendo proyecciones si están en el rango)
+        egresos = state.filteredData.filter((r) => r.tipo === "02_Egreso");
+    }
+    
+    const grouped = groupByCategory(egresos);
     const total = grouped.reduce((acc, g) => acc + g.value, 0);
 
     if (!grouped.length || total === 0) {
@@ -1346,7 +2050,6 @@ function renderParetoSection() {
         `;
     });
 
-    // Chart
     destroyChart("pareto");
     running = 0;
     const cumPercent = grouped.map((g) => {
@@ -1354,11 +2057,11 @@ function renderParetoSection() {
         return (running / total) * 100;
     });
 
-    // Gradiente para barras
-    const ctxCanvas = ctx.getContext('2d');
-    const gradientBar = ctxCanvas.createLinearGradient(0, 0, 0, 300);
-    gradientBar.addColorStop(0, 'rgba(211, 47, 47, 0.9)');
-    gradientBar.addColorStop(1, 'rgba(211, 47, 47, 0.5)');
+    // Colores sólidos para las barras del Pareto (degradado de intensidad)
+    const paretoBarColors = grouped.map((_, i) => {
+        const alpha = 1 - (i * 0.06);
+        return `rgba(0, 87, 112, ${alpha})`; // cramsa-teal-dark con degradado de opacidad
+    });
 
     state.charts.pareto = new Chart(ctx, {
         data: {
@@ -1369,81 +2072,83 @@ function renderParetoSection() {
                     label: "% Acumulado",
                     data: cumPercent,
                     yAxisID: "y1",
-                    borderColor: "#0097a7",
-                    backgroundColor: "rgba(0, 151, 167, 0.1)",
-                    borderWidth: 4,
+                    borderColor: cramsaPalette.gold,
+                    borderWidth: 3,
                     fill: false,
-                    order: 0,
                     pointRadius: 5,
-                    pointBackgroundColor: "#0097a7",
+                    pointBackgroundColor: cramsaPalette.gold,
                     pointBorderColor: "#fff",
                     pointBorderWidth: 2,
-                    pointHoverRadius: 8
+                    tension: 0.3
                 },
                 {
                     type: "bar",
                     label: "Gasto por Categoría",
                     data: grouped.map((g) => g.value),
-                    backgroundColor: gradientBar,
-                    borderColor: "#d32f2f",
-                    borderWidth: 1,
-                    borderRadius: 4,
-                    order: 1
+                    backgroundColor: paretoBarColors,
+                    borderColor: cramsaPalette.tealDark,
+                    borderWidth: 0,
+                    borderRadius: 4
                 }
             ]
         },
         options: {
             responsive: true,
+            maintainAspectRatio: true,
+            aspectRatio: 1.8,
             animation: false,
-            interaction: {
-                intersect: false,
-                mode: 'index'
-            },
+            resizeDelay: 100,
+            interaction: { intersect: false, mode: 'index' },
             plugins: {
-                legend: {
-                    position: "top",
-                    labels: {
-                        usePointStyle: true,
-                        padding: 15,
-                        font: { weight: '500' }
-                    }
+                legend: { 
+                    position: "top", 
+                    labels: { 
+                        usePointStyle: true, 
+                        padding: 18,
+                        font: { size: 12, family: "'Plus Jakarta Sans', sans-serif", weight: '600' },
+                        color: cramsaPalette.navy
+                    } 
                 },
                 tooltip: {
-                    backgroundColor: 'rgba(26, 43, 60, 0.95)',
-                    titleFont: { size: 13, weight: '600' },
-                    bodyFont: { size: 12 },
-                    padding: 12,
-                    cornerRadius: 8,
+                    backgroundColor: cramsaPalette.navy,
+                    padding: 14,
+                    cornerRadius: 10,
+                    titleFont: { size: 12, weight: '700', family: "'Plus Jakarta Sans', sans-serif" },
+                    bodyFont: { size: 12, family: "'JetBrains Mono', monospace" },
                     callbacks: {
                         title: (items) => grouped[items[0].dataIndex]?.label || '',
-                        label: (ctx) => {
-                            if (ctx.dataset.type === 'line') {
-                                return `Acumulado: ${ctx.raw.toFixed(1)}%`;
-                            }
-                            return `Gasto: ${formatCurrency(-ctx.raw)}`;
-                        }
+                        label: (ctx) => ctx.dataset.type === 'line' ? `Acumulado: ${ctx.raw.toFixed(1)}%` : `Gasto: ${formatCurrency(-ctx.raw)}`
                     }
                 }
             },
             scales: {
-                y: {
-                    grid: { color: 'rgba(0,0,0,0.05)' },
-                    ticks: { callback: (v) => formatAxis(v), font: { size: 11 } }
-                },
-                y1: {
-                    position: "right",
-                    grid: { drawOnChartArea: false },
-                    ticks: { callback: (v) => `${v}%`, font: { size: 11 } },
-                    max: 100
-                },
-                x: {
-                    grid: { display: false },
+                y: { 
+                    grid: { color: 'rgba(19, 41, 75, 0.06)' }, 
                     ticks: { 
-                        font: { size: 9 }, 
-                        maxRotation: 90,
-                        minRotation: 45,
-                        autoSkip: false
-                    }
+                        callback: (v) => formatAxis(v),
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.tealDark
+                    } 
+                },
+                y1: { 
+                    position: "right", 
+                    grid: { drawOnChartArea: false }, 
+                    ticks: { 
+                        callback: (v) => `${v}%`,
+                        font: { size: 11, family: "'JetBrains Mono', monospace" },
+                        color: cramsaPalette.gold
+                    }, 
+                    max: 100 
+                },
+                x: { 
+                    grid: { display: false }, 
+                    ticks: { 
+                        maxRotation: 90, 
+                        minRotation: 45, 
+                        autoSkip: false,
+                        font: { size: 10, family: "'Plus Jakarta Sans', sans-serif" },
+                        color: cramsaPalette.navy
+                    } 
                 }
             }
         }
@@ -1455,11 +2160,17 @@ function groupByCategory(rows) {
     const map = new Map();
     rows.forEach((r) => {
         if (!map.has(r.categoria)) map.set(r.categoria, 0);
-        map.set(r.categoria, map.get(r.categoria) + Math.abs(r.monto));
+        map.set(r.categoria, map.get(r.categoria) + Math.abs(r.valor));
     });
     return Array.from(map.entries())
-        .map(([label, value]) => ({ label, value }))
+        .map(([label, value]) => ({ label: removePrefix(label), value }))
         .sort((a, b) => b.value - a.value);
+}
+
+// Función auxiliar para eliminar prefijos "XX_" de las etiquetas
+function removePrefix(str) {
+    if (!str) return str;
+    return str.replace(/^\d{2}_/, '');
 }
 
 function destroyChart(name) {
@@ -1484,9 +2195,9 @@ function formatCurrency(value) {
 }
 
 function formatAxis(value) {
-    if (Math.abs(value) >= 1e9) return `${(value / 1e9).toFixed(1)} MM`;  // Mil millones
-    if (Math.abs(value) >= 1e6) return `${(value / 1e6).toFixed(1)} M`;   // Millones
-    if (Math.abs(value) >= 1e3) return `${(value / 1e3).toFixed(0)} K`;   // Miles
+    if (Math.abs(value) >= 1e9) return `${(value / 1e9).toFixed(1)} MM`;
+    if (Math.abs(value) >= 1e6) return `${(value / 1e6).toFixed(1)} M`;
+    if (Math.abs(value) >= 1e3) return `${(value / 1e3).toFixed(0)} K`;
     return value;
 }
 
@@ -1500,21 +2211,27 @@ function setupDatabaseControls() {
         renderDatabaseTable();
     }, 300));
 
-    // Filtros por columna (selects)
+    // Filtros por columna
+    document.getElementById("filterDbAbono")?.addEventListener("input", debounce((e) => {
+        state.db.filters.abono = e.target.value.toLowerCase();
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    }, 300));
+
+    document.getElementById("filterDbEmpresa")?.addEventListener("change", (e) => {
+        state.db.filters.empresa = e.target.value;
+        state.db.currentPage = 1;
+        renderDatabaseTable();
+    });
+
     document.getElementById("filterDbTipo")?.addEventListener("change", (e) => {
         state.db.filters.tipo = e.target.value;
         state.db.currentPage = 1;
         renderDatabaseTable();
     });
 
-    document.getElementById("filterDbCC")?.addEventListener("change", (e) => {
-        state.db.filters.cc = e.target.value;
-        state.db.currentPage = 1;
-        renderDatabaseTable();
-    });
-
-    document.getElementById("filterDbItem")?.addEventListener("change", (e) => {
-        state.db.filters.item = e.target.value;
+    document.getElementById("filterDbGrupo")?.addEventListener("change", (e) => {
+        state.db.filters.grupo = e.target.value;
         state.db.currentPage = 1;
         renderDatabaseTable();
     });
@@ -1525,41 +2242,32 @@ function setupDatabaseControls() {
         renderDatabaseTable();
     });
 
-    // Filtros por columna (texto)
     document.getElementById("filterDbSubcat")?.addEventListener("input", debounce((e) => {
         state.db.filters.subcategoria = e.target.value.toLowerCase();
         state.db.currentPage = 1;
         renderDatabaseTable();
     }, 300));
 
-    document.getElementById("filterDbDetalle")?.addEventListener("input", debounce((e) => {
-        state.db.filters.detalle = e.target.value.toLowerCase();
+    document.getElementById("filterDbCodigo")?.addEventListener("input", debounce((e) => {
+        state.db.filters.codigo = e.target.value.toLowerCase();
         state.db.currentPage = 1;
         renderDatabaseTable();
     }, 300));
 
-    // Filtros de fecha
-    document.getElementById("filterDbFechaDesde")?.addEventListener("change", (e) => {
-        state.db.filters.fechaDesde = e.target.value ? new Date(e.target.value) : null;
+    document.getElementById("filterDbMes")?.addEventListener("change", (e) => {
+        state.db.filters.mes = e.target.value;
         state.db.currentPage = 1;
         renderDatabaseTable();
     });
 
-    document.getElementById("filterDbFechaHasta")?.addEventListener("change", (e) => {
-        state.db.filters.fechaHasta = e.target.value ? new Date(e.target.value) : null;
-        state.db.currentPage = 1;
-        renderDatabaseTable();
-    });
-
-    // Filtros de monto
-    document.getElementById("filterDbMontoMin")?.addEventListener("input", debounce((e) => {
-        state.db.filters.montoMin = e.target.value ? parseFloat(e.target.value) : null;
+    document.getElementById("filterDbValorMin")?.addEventListener("input", debounce((e) => {
+        state.db.filters.valorMin = e.target.value ? parseFloat(e.target.value) : null;
         state.db.currentPage = 1;
         renderDatabaseTable();
     }, 300));
 
-    document.getElementById("filterDbMontoMax")?.addEventListener("input", debounce((e) => {
-        state.db.filters.montoMax = e.target.value ? parseFloat(e.target.value) : null;
+    document.getElementById("filterDbValorMax")?.addEventListener("input", debounce((e) => {
+        state.db.filters.valorMax = e.target.value ? parseFloat(e.target.value) : null;
         state.db.currentPage = 1;
         renderDatabaseTable();
     }, 300));
@@ -1619,7 +2327,6 @@ function setupDatabaseControls() {
     document.getElementById("modalCancel")?.addEventListener("click", closeModal);
     document.getElementById("modalSave")?.addEventListener("click", saveEditedRow);
 
-    // Cerrar modal al hacer click fuera
     document.getElementById("editModal")?.addEventListener("click", (e) => {
         if (e.target.id === "editModal") closeModal();
     });
@@ -1634,12 +2341,11 @@ function setupDatabaseControls() {
         if (e.target.id === "bulkEditModal") closeBulkModal();
     });
 
-    // Checkboxes de edición masiva
     setupBulkCheckboxes();
 }
 
 function setupBulkCheckboxes() {
-    const fields = ["Tipo", "CC", "Item", "Categoria", "Subcategoria"];
+    const fields = ["Empresa", "Tipo", "Grupo", "Categoria", "Subcategoria"];
     fields.forEach((field) => {
         const checkbox = document.getElementById(`bulkCheck${field}`);
         const input = document.getElementById(`bulk${field}`);
@@ -1666,43 +2372,39 @@ function toggleEditMode() {
 }
 
 function clearDbFilters() {
-    // Reset state
     state.db.filters = {
+        abono: "",
+        empresa: "",
         tipo: "",
-        cc: "",
-        item: "",
+        grupo: "",
         categoria: "",
         subcategoria: "",
-        detalle: "",
-        fechaDesde: null,
-        fechaHasta: null,
-        montoMin: null,
-        montoMax: null
+        codigo: "",
+        mes: "",
+        valorMin: null,
+        valorMax: null
     };
     state.db.searchTerm = "";
     state.db.currentPage = 1;
 
-    // Reset UI
     document.getElementById("dbSearch").value = "";
+    document.getElementById("filterDbAbono").value = "";
+    document.getElementById("filterDbEmpresa").value = "";
     document.getElementById("filterDbTipo").value = "";
-    document.getElementById("filterDbCC").value = "";
-    document.getElementById("filterDbItem").value = "";
+    document.getElementById("filterDbGrupo").value = "";
     document.getElementById("filterDbCategoria").value = "";
     document.getElementById("filterDbSubcat").value = "";
-    document.getElementById("filterDbDetalle").value = "";
-    document.getElementById("filterDbFechaDesde").value = "";
-    document.getElementById("filterDbFechaHasta").value = "";
-    document.getElementById("filterDbMontoMin").value = "";
-    document.getElementById("filterDbMontoMax").value = "";
+    document.getElementById("filterDbCodigo").value = "";
+    document.getElementById("filterDbMes").value = "";
+    document.getElementById("filterDbValorMin").value = "";
+    document.getElementById("filterDbValorMax").value = "";
 
     renderDatabaseTable();
 }
 
 function updateBulkEditButton() {
     const btn = document.getElementById("btnBulkEdit");
-    if (btn) {
-        btn.disabled = state.db.selectedRows.size === 0;
-    }
+    if (btn) btn.disabled = state.db.selectedRows.size === 0;
 }
 
 function debounce(func, wait) {
@@ -1722,37 +2424,34 @@ function renderDatabaseTable() {
     if (!tbody) return;
 
     if (!state.rawData.length) {
-        tbody.innerHTML = `<tr><td colspan="9" class="empty-message">Importe un archivo CSV para visualizar los datos</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="10" class="empty-message">Importe el archivo CSV para visualizar los datos</td></tr>`;
         updateDbStats();
         return;
     }
 
-    // Poblar filtros de columna con opciones únicas
     populateDbFilterOptions();
 
-    // Aplicar todos los filtros
+    // Aplicar filtros
     let filtered = state.rawData;
 
-    // Búsqueda global
     if (state.db.searchTerm) {
         filtered = filtered.filter((row) => {
-            const searchStr = `${row.tipo} ${row.cc} ${row.item} ${row.categoria} ${row.subcategoria} ${row.detalle}`.toLowerCase();
+            const searchStr = `${row.abono} ${row.empresa} ${row.tipo} ${row.grupo} ${row.categoria} ${row.subcategoria} ${row.codigo}`.toLowerCase();
             return searchStr.includes(state.db.searchTerm);
         });
     }
 
-    // Filtros por columna
     const f = state.db.filters;
+    if (f.abono) filtered = filtered.filter((r) => (r.abono || "").toLowerCase().includes(f.abono));
+    if (f.empresa) filtered = filtered.filter((r) => r.empresa === f.empresa);
     if (f.tipo) filtered = filtered.filter((r) => r.tipo === f.tipo);
-    if (f.cc) filtered = filtered.filter((r) => r.cc === f.cc);
-    if (f.item) filtered = filtered.filter((r) => r.item === f.item);
+    if (f.grupo) filtered = filtered.filter((r) => r.grupo === f.grupo);
     if (f.categoria) filtered = filtered.filter((r) => r.categoria === f.categoria);
     if (f.subcategoria) filtered = filtered.filter((r) => (r.subcategoria || "").toLowerCase().includes(f.subcategoria));
-    if (f.detalle) filtered = filtered.filter((r) => (r.detalle || "").toLowerCase().includes(f.detalle));
-    if (f.fechaDesde) filtered = filtered.filter((r) => r.fecha >= f.fechaDesde);
-    if (f.fechaHasta) filtered = filtered.filter((r) => r.fecha <= f.fechaHasta);
-    if (f.montoMin !== null) filtered = filtered.filter((r) => r.monto >= f.montoMin);
-    if (f.montoMax !== null) filtered = filtered.filter((r) => r.monto <= f.montoMax);
+    if (f.codigo) filtered = filtered.filter((r) => (r.codigo || "").toLowerCase().includes(f.codigo));
+    if (f.mes) filtered = filtered.filter((r) => r.mes === f.mes);
+    if (f.valorMin !== null) filtered = filtered.filter((r) => r.valor >= f.valorMin);
+    if (f.valorMax !== null) filtered = filtered.filter((r) => r.valor <= f.valorMax);
 
     state.db.filteredData = filtered;
 
@@ -1765,7 +2464,6 @@ function renderDatabaseTable() {
     const endIdx = startIdx + pageSize;
     const pageData = filtered.slice(startIdx, endIdx);
 
-    // Aplicar clase de modo edición a la tabla
     const table = document.getElementById("dbTable");
     if (state.db.isEditMode) {
         table?.classList.remove("readonly-mode");
@@ -1775,39 +2473,34 @@ function renderDatabaseTable() {
         table?.classList.add("readonly-mode");
     }
 
-    // Renderizar filas con celdas editables
     let html = "";
     pageData.forEach((row) => {
         const globalIdx = state.rawData.indexOf(row);
         const isSelected = state.db.selectedRows.has(globalIdx);
-        const fechaStr = row.fecha ? row.fecha.toISOString().split("T")[0] : "";
-        const fechaDisplay = row.fecha ? row.fecha.toLocaleDateString("es-CL") : "-";
-        const montoClass = row.monto < 0 ? "val-negative" : row.monto > 0 ? "val-positive" : "";
+        const valorClass = row.valor < 0 ? "val-negative" : row.valor > 0 ? "val-positive" : "";
 
         html += `
             <tr class="${isSelected ? "selected" : ""}" data-index="${globalIdx}">
-                <td class="col-check">
-                    <input type="checkbox" data-index="${globalIdx}" ${isSelected ? "checked" : ""}>
-                </td>
+                <td class="col-check"><input type="checkbox" data-index="${globalIdx}" ${isSelected ? "checked" : ""}></td>
+                <td data-editable="true" data-field="abono" data-type="text" title="${row.abono || ""}">${truncateText(row.abono, 25) || "-"}</td>
+                <td data-editable="true" data-field="empresa" data-type="text">${row.empresa || "-"}</td>
                 <td data-editable="true" data-field="tipo" data-type="text">${row.tipo || "-"}</td>
-                <td data-editable="true" data-field="cc" data-type="text">${row.cc || "-"}</td>
-                <td data-editable="true" data-field="item" data-type="text">${row.item || "-"}</td>
+                <td data-editable="true" data-field="grupo" data-type="text">${row.grupo || "-"}</td>
                 <td data-editable="true" data-field="categoria" data-type="text">${row.categoria || "-"}</td>
                 <td data-editable="true" data-field="subcategoria" data-type="text">${row.subcategoria || "-"}</td>
-                <td data-editable="true" data-field="detalle" data-type="text" title="${row.detalle || ""}">${truncateText(row.detalle, 30) || "-"}</td>
-                <td data-editable="true" data-field="fecha" data-type="date" data-value="${fechaStr}">${fechaDisplay}</td>
-                <td data-editable="true" data-field="monto" data-type="number" class="${montoClass}">${formatCurrency(row.monto)}</td>
+                <td data-editable="true" data-field="codigo" data-type="text">${row.codigo || "-"}</td>
+                <td data-editable="true" data-field="mes" data-type="text">${row.mes || "-"}</td>
+                <td data-editable="true" data-field="valor" data-type="number" class="${valorClass}">${formatCurrency(row.valor)}</td>
             </tr>
         `;
     });
 
-    tbody.innerHTML = html || `<tr><td colspan="9" class="empty-message">No se encontraron resultados</td></tr>`;
+    tbody.innerHTML = html || `<tr><td colspan="10" class="empty-message">No se encontraron resultados</td></tr>`;
 
-    // Setup event listeners para checkboxes y click en filas
+    // Event listeners
     tbody.querySelectorAll("tr[data-index]").forEach((tr) => {
         const checkbox = tr.querySelector("input[type='checkbox']");
         
-        // Click en checkbox
         checkbox?.addEventListener("change", (e) => {
             e.stopPropagation();
             const idx = parseInt(e.target.dataset.index);
@@ -1822,7 +2515,6 @@ function renderDatabaseTable() {
             updateBulkEditButton();
         });
 
-        // Click en celda editable para edición inline (solo si modo edición está activo)
         tr.querySelectorAll("td[data-editable='true']").forEach((td) => {
             td.addEventListener("click", (e) => {
                 e.stopPropagation();
@@ -1832,7 +2524,6 @@ function renderDatabaseTable() {
             });
         });
 
-        // Click en fila para seleccionar (solo en checkbox column)
         tr.querySelector(".col-check")?.addEventListener("click", (e) => {
             if (e.target.type === "checkbox") return;
             const idx = parseInt(tr.dataset.index);
@@ -1852,7 +2543,6 @@ function renderDatabaseTable() {
         });
     });
 
-    // Actualizar paginación
     document.getElementById("dbPageInfo").textContent = `Página ${state.db.currentPage} de ${totalPages}`;
     document.getElementById("dbPrevPage").disabled = state.db.currentPage <= 1;
     document.getElementById("dbNextPage").disabled = state.db.currentPage >= totalPages;
@@ -1862,7 +2552,17 @@ function renderDatabaseTable() {
 }
 
 function populateDbFilterOptions() {
-    // Solo poblar si hay datos y los selects están vacíos (excepto "Todos")
+    const empresaSelect = document.getElementById("filterDbEmpresa");
+    if (empresaSelect && empresaSelect.options.length <= 1) {
+        const empresas = [...new Set(state.rawData.map((r) => r.empresa))].filter(Boolean);
+        // Orden específico: CRAMSA - INFRA - GRUPO - ADD
+        const empresaOrder = { "CRAMSA": 1, "INFRA": 2, "GRUPO": 3, "ADD": 4 };
+        empresas.sort((a, b) => (empresaOrder[a] || 999) - (empresaOrder[b] || 999));
+        empresas.forEach((e) => {
+            empresaSelect.innerHTML += `<option value="${e}">${e}</option>`;
+        });
+    }
+
     const tipoSelect = document.getElementById("filterDbTipo");
     if (tipoSelect && tipoSelect.options.length <= 1) {
         const tipos = [...new Set(state.rawData.map((r) => r.tipo))].filter(Boolean).sort();
@@ -1871,19 +2571,11 @@ function populateDbFilterOptions() {
         });
     }
 
-    const ccSelect = document.getElementById("filterDbCC");
-    if (ccSelect && ccSelect.options.length <= 1) {
-        const ccs = [...new Set(state.rawData.map((r) => r.cc))].filter(Boolean).sort();
-        ccs.forEach((c) => {
-            ccSelect.innerHTML += `<option value="${c}">${c}</option>`;
-        });
-    }
-
-    const itemSelect = document.getElementById("filterDbItem");
-    if (itemSelect && itemSelect.options.length <= 1) {
-        const items = [...new Set(state.rawData.map((r) => r.item))].filter(Boolean).sort();
-        items.forEach((i) => {
-            itemSelect.innerHTML += `<option value="${i}">${i}</option>`;
+    const grupoSelect = document.getElementById("filterDbGrupo");
+    if (grupoSelect && grupoSelect.options.length <= 1) {
+        const grupos = [...new Set(state.rawData.map((r) => r.grupo))].filter(Boolean).sort();
+        grupos.forEach((g) => {
+            grupoSelect.innerHTML += `<option value="${g}">${g}</option>`;
         });
     }
 
@@ -1892,6 +2584,14 @@ function populateDbFilterOptions() {
         const cats = [...new Set(state.rawData.map((r) => r.categoria))].filter(Boolean).sort();
         cats.forEach((c) => {
             catSelect.innerHTML += `<option value="${c}">${c}</option>`;
+        });
+    }
+
+    const mesSelect = document.getElementById("filterDbMes");
+    if (mesSelect && mesSelect.options.length <= 1) {
+        const meses = [...new Set(state.rawData.map((r) => r.mes))].filter(Boolean).sort();
+        meses.forEach((m) => {
+            mesSelect.innerHTML += `<option value="${m}">${m}</option>`;
         });
     }
 }
@@ -1915,24 +2615,27 @@ function updateDbStats() {
 
 function openNewRecordModal() {
     document.getElementById("editIndex").value = -1;
-    document.getElementById("modalTitle").textContent = "Nuevo Registro";
+    document.getElementById("modalTitle").innerHTML = '<i class="fa-solid fa-file-pen"></i> Nuevo Registro';
 
-    // Poblar selects con opciones únicas de los datos o defaults
-    const defaultTipos = ["01_Ingreso", "02_Cargo", "03_Saldos iniciales", "04_Movimiento Interno"];
+    const defaultEmpresas = ["ADD", "CRAMSA", "INFRA", "GRUPO"];
+    const defaultTipos = ["00_Saldos", "01_Ingreso", "02_Egreso", "03_Movimiento interno"];
+    
+    const empresas = state.rawData.length > 0 ? getUniqueValues("empresa") : defaultEmpresas;
     const tipos = state.rawData.length > 0 ? getUniqueValues("tipo") : defaultTipos;
-    const ccs = state.rawData.length > 0 ? getUniqueValues("cc") : ["CC Principal"];
-    const items = state.rawData.length > 0 ? getUniqueValues("item") : ["Item General"];
-    const categorias = state.rawData.length > 0 ? getUniqueValues("categoria") : ["Categoría General"];
+    const grupos = state.rawData.length > 0 ? getUniqueValues("grupo") : ["-"];
+    const categorias = state.rawData.length > 0 ? getUniqueValues("categoria") : ["Sin categoría"];
+    const meses = state.rawData.length > 0 ? getUniqueValues("mes") : ["03-25"];
 
+    populateSelect("editEmpresa", empresas, empresas[0]);
     populateSelect("editTipo", tipos, tipos[0]);
-    populateSelect("editCC", ccs, ccs[0]);
-    populateSelect("editItem", items, items[0]);
+    populateSelect("editGrupo", grupos, grupos[0]);
     populateSelect("editCategoria", categorias, categorias[0]);
+    populateSelect("editMes", meses, meses[0]);
 
+    document.getElementById("editAbono").value = "";
     document.getElementById("editSubcategoria").value = "";
-    document.getElementById("editDetalle").value = "";
-    document.getElementById("editMonto").value = "";
-    document.getElementById("editFecha").value = new Date().toISOString().split("T")[0];
+    document.getElementById("editCodigo").value = "";
+    document.getElementById("editValor").value = "";
 
     document.getElementById("editModal").classList.add("active");
 }
@@ -1942,25 +2645,18 @@ function openEditModal(index) {
     if (!row) return;
 
     document.getElementById("editIndex").value = index;
-    document.getElementById("modalTitle").textContent = "Editar Registro";
+    document.getElementById("modalTitle").innerHTML = '<i class="fa-solid fa-file-pen"></i> Editar Registro';
 
-    // Poblar selects con opciones únicas de los datos
+    populateSelect("editEmpresa", getUniqueValues("empresa"), row.empresa);
     populateSelect("editTipo", getUniqueValues("tipo"), row.tipo);
-    populateSelect("editCC", getUniqueValues("cc"), row.cc);
-    populateSelect("editItem", getUniqueValues("item"), row.item);
+    populateSelect("editGrupo", getUniqueValues("grupo"), row.grupo);
     populateSelect("editCategoria", getUniqueValues("categoria"), row.categoria);
+    populateSelect("editMes", getUniqueValues("mes"), row.mes);
 
+    document.getElementById("editAbono").value = row.abono || "";
     document.getElementById("editSubcategoria").value = row.subcategoria || "";
-    document.getElementById("editDetalle").value = row.detalle || "";
-    document.getElementById("editMonto").value = row.monto || 0;
-
-    // Fecha
-    if (row.fecha) {
-        const dateStr = row.fecha.toISOString().split("T")[0];
-        document.getElementById("editFecha").value = dateStr;
-    } else {
-        document.getElementById("editFecha").value = "";
-    }
+    document.getElementById("editCodigo").value = row.codigo || "";
+    document.getElementById("editValor").value = row.valor || 0;
 
     document.getElementById("editModal").classList.add("active");
 }
@@ -1988,50 +2684,42 @@ function saveEditedRow() {
 
     let row;
     if (isNewRecord) {
-        // Crear nuevo registro
         row = {};
     } else {
         if (!state.rawData[index]) return;
         row = state.rawData[index];
     }
 
+    row.abono = document.getElementById("editAbono").value;
+    row.empresa = document.getElementById("editEmpresa").value;
     row.tipo = document.getElementById("editTipo").value;
-    row.cc = document.getElementById("editCC").value;
-    row.item = document.getElementById("editItem").value;
+    row.grupo = document.getElementById("editGrupo").value;
     row.categoria = document.getElementById("editCategoria").value;
     row.subcategoria = document.getElementById("editSubcategoria").value;
-    row.detalle = document.getElementById("editDetalle").value;
-    row.monto = parseFloat(document.getElementById("editMonto").value) || 0;
+    row.codigo = document.getElementById("editCodigo").value;
+    row.mes = document.getElementById("editMes").value;
+    row.valor = parseFloat(document.getElementById("editValor").value) || 0;
 
-    const fechaStr = document.getElementById("editFecha").value;
-    if (fechaStr) {
-        row.fecha = new Date(fechaStr);
-        row.year = row.fecha.getFullYear();
-        row.month = row.fecha.getMonth();
-    } else {
-        row.fecha = null;
-        row.year = null;
-        row.month = null;
+    // Parsear mes para obtener year y month
+    const mesParsed = parseMes(row.mes);
+    if (mesParsed) {
+        row.year = mesParsed.year;
+        row.month = mesParsed.month;
+        row.mesKey = getMesKey(mesParsed.year, mesParsed.month);
     }
 
     if (isNewRecord) {
-        // Agregar nuevo registro al array
         state.rawData.push(row);
     }
 
     closeModal();
     
-    // Actualizar opciones de filtro y reconstruir headers si es necesario
     extractFilterOptions();
     buildDynamicHeaders();
-    buildCCButtons();
+    buildEmpresaButtons();
     
     renderDatabaseTable();
-
-    // Actualizar otras vistas
     applyFilters();
-    
-    // Guardar cambios en localStorage
     saveToLocalStorage();
 
     if (isNewRecord) {
@@ -2045,7 +2733,6 @@ function exportToCSV() {
         return;
     }
 
-    // Determinar qué datos exportar (seleccionados o todos los filtrados)
     let dataToExport;
     if (state.db.selectedRows.size > 0) {
         dataToExport = state.rawData.filter((_, idx) => state.db.selectedRows.has(idx));
@@ -2055,31 +2742,27 @@ function exportToCSV() {
         dataToExport = state.rawData;
     }
 
-    // Crear CSV
-    const headers = ["Tipo de movimiento", "Centro de costos", "Item", "Categoría", "Subcategoría", "Detalle", "Fecha", "Monto"];
+    const headers = ["Abonos", "Empresa", "Tipo de movimiento", "Grupo", "Categoría", "Subcategoría", "Codigo", "Mes", "Valor"];
     const rows = dataToExport.map((row) => {
-        const fechaStr = row.fecha ? 
-            `${row.fecha.getDate().toString().padStart(2, "0")}/${(row.fecha.getMonth() + 1).toString().padStart(2, "0")}/${row.fecha.getFullYear()}` : 
-            "";
         return [
+            row.abono,
+            row.empresa,
             row.tipo,
-            row.cc,
-            row.item,
+            row.grupo,
             row.categoria,
             row.subcategoria,
-            row.detalle,
-            fechaStr,
-            row.monto
+            row.codigo,
+            row.mes,
+            row.valor
         ].map((val) => `"${(val || "").toString().replace(/"/g, '""')}"`).join(";");
     });
 
     const csvContent = "\uFEFF" + headers.join(";") + "\n" + rows.join("\n");
 
-    // Descargar
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `CRAMSA_export_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `Flujo_Caja_export_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
 }
 
@@ -2092,14 +2775,12 @@ function openBulkEditModal() {
 
     document.getElementById("bulkCount").textContent = state.db.selectedRows.size;
 
-    // Poblar selects con opciones únicas
+    populateSelect("bulkEmpresa", getUniqueValues("empresa"), "");
     populateSelect("bulkTipo", getUniqueValues("tipo"), "");
-    populateSelect("bulkCC", getUniqueValues("cc"), "");
-    populateSelect("bulkItem", getUniqueValues("item"), "");
+    populateSelect("bulkGrupo", getUniqueValues("grupo"), "");
     populateSelect("bulkCategoria", getUniqueValues("categoria"), "");
 
-    // Reset checkboxes y campos
-    ["Tipo", "CC", "Item", "Categoria", "Subcategoria"].forEach((field) => {
+    ["Empresa", "Tipo", "Grupo", "Categoria", "Subcategoria"].forEach((field) => {
         const checkbox = document.getElementById(`bulkCheck${field}`);
         const input = document.getElementById(`bulk${field}`);
         if (checkbox) checkbox.checked = false;
@@ -2120,17 +2801,16 @@ function saveBulkEdit() {
     const changes = {};
     let hasChanges = false;
 
-    // Recoger campos marcados
+    if (document.getElementById("bulkCheckEmpresa")?.checked) {
+        changes.empresa = document.getElementById("bulkEmpresa").value;
+        hasChanges = true;
+    }
     if (document.getElementById("bulkCheckTipo")?.checked) {
         changes.tipo = document.getElementById("bulkTipo").value;
         hasChanges = true;
     }
-    if (document.getElementById("bulkCheckCC")?.checked) {
-        changes.cc = document.getElementById("bulkCC").value;
-        hasChanges = true;
-    }
-    if (document.getElementById("bulkCheckItem")?.checked) {
-        changes.item = document.getElementById("bulkItem").value;
+    if (document.getElementById("bulkCheckGrupo")?.checked) {
+        changes.grupo = document.getElementById("bulkGrupo").value;
         hasChanges = true;
     }
     if (document.getElementById("bulkCheckCategoria")?.checked) {
@@ -2147,7 +2827,6 @@ function saveBulkEdit() {
         return;
     }
 
-    // Aplicar cambios a los registros seleccionados
     let count = 0;
     state.db.selectedRows.forEach((idx) => {
         const row = state.rawData[idx];
@@ -2157,316 +2836,20 @@ function saveBulkEdit() {
         }
     });
 
-    // Limpiar selección
     state.db.selectedRows.clear();
     document.getElementById("dbSelectAll").checked = false;
 
     closeBulkModal();
     
-    // Actualizar vistas
     renderDatabaseTable();
     applyFilters();
-    
-    // Guardar cambios en localStorage
     saveToLocalStorage();
 
     alert(`Se actualizaron ${count} registros correctamente.`);
 }
 
-// ===== EXPORTAR A PDF =====
-function setupExportPDF() {
-    const btnExport = document.getElementById("btnExportPDF");
-    btnExport?.addEventListener("click", exportToPDF);
-}
-
-async function exportToPDF() {
-    // Verificar que html2pdf esté disponible
-    if (typeof html2pdf === 'undefined') {
-        alert("Error: La librería de PDF no está cargada. Por favor, recarga la página e intenta de nuevo.");
-        console.error("html2pdf no está definido");
-        return;
-    }
-
-    // Verificar que hay datos
-    if (!state.filteredData || state.filteredData.length === 0) {
-        alert("No hay datos para exportar. Importe un archivo CSV primero.");
-        return;
-    }
-
-    // Mostrar loading
-    const loadingOverlay = document.createElement("div");
-    loadingOverlay.className = "pdf-loading-overlay";
-    loadingOverlay.innerHTML = `
-        <div class="pdf-loading-spinner"></div>
-        <div class="pdf-loading-text">Generando informe PDF</div>
-    `;
-    document.body.appendChild(loadingOverlay);
-
-    try {
-        // Calcular datos para el informe
-        const data = state.filteredData;
-        const saldoInicial = data.filter((r) => r.tipo === "03_Saldos iniciales").reduce((acc, r) => acc + r.monto, 0);
-        const totalIngresos = data.filter((r) => r.tipo === "01_Ingreso").reduce((acc, r) => acc + r.monto, 0);
-        const totalEgresos = data.filter((r) => r.tipo === "02_Cargo").reduce((acc, r) => acc + Math.abs(r.monto), 0);
-        const saldoFinal = saldoInicial + totalIngresos - totalEgresos;
-        const flujoNeto = totalIngresos - totalEgresos;
-        const ratio = totalEgresos > 0 ? (totalIngresos / totalEgresos).toFixed(2) : 'N/A';
-        const variacion = saldoInicial !== 0 ? (((saldoFinal - saldoInicial) / Math.abs(saldoInicial)) * 100).toFixed(1) + '%' : 'N/A';
-        
-        // Obtener top categorías de gastos
-        const gastosPorCategoria = {};
-        data.filter(r => r.tipo === "02_Cargo").forEach(r => {
-            const cat = r.categoria || "Sin categoría";
-            gastosPorCategoria[cat] = (gastosPorCategoria[cat] || 0) + Math.abs(r.monto);
-        });
-        const topGastos = Object.entries(gastosPorCategoria)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
-
-        // Obtener top categorías de ingresos
-        const ingresosPorCategoria = {};
-        data.filter(r => r.tipo === "01_Ingreso").forEach(r => {
-            const cat = r.categoria || "Sin categoría";
-            ingresosPorCategoria[cat] = (ingresosPorCategoria[cat] || 0) + r.monto;
-        });
-        const topIngresos = Object.entries(ingresosPorCategoria)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
-
-        // Determinar período del reporte
-        const fechas = data.filter(r => r.fecha).map(r => r.fecha);
-        const fechaMin = fechas.length ? new Date(Math.min(...fechas)) : null;
-        const fechaMax = fechas.length ? new Date(Math.max(...fechas)) : null;
-        const periodoStr = fechaMin && fechaMax 
-            ? `${fechaMin.toLocaleDateString("es-CL", { month: "long", year: "numeric" })} - ${fechaMax.toLocaleDateString("es-CL", { month: "long", year: "numeric" })}`
-            : "Sin datos de período";
-
-        // Filtro activo
-        const filtroCC = state.currentCC === "all" ? "Todos los centros de costos" : state.currentCC;
-        const fechaGeneracion = new Date().toLocaleDateString("es-CL", { 
-            weekday: "long", year: "numeric", month: "long", day: "numeric" 
-        });
-        const horaGeneracion = new Date().toLocaleTimeString("es-CL");
-
-        // Crear el contenido HTML del informe usando TABLAS para compatibilidad
-        const reportHTML = `
-            <div style="font-family: Arial, sans-serif; padding: 40px; background: #fff; color: #333; font-size: 12px; line-height: 1.5; width: 700px;">
-                
-                <!-- ENCABEZADO -->
-                <table style="width: 100%; border-bottom: 3px solid #003978; padding-bottom: 15px; margin-bottom: 20px;">
-                    <tr>
-                        <td style="width: 150px; vertical-align: middle;">
-                            <div style="background: #003978; color: white; padding: 10px 15px; border-radius: 5px; font-weight: bold; font-size: 18px;">CRAMSA</div>
-                        </td>
-                        <td style="text-align: right; vertical-align: middle;">
-                            <div style="color: #003978; font-size: 22px; font-weight: bold; margin-bottom: 5px;">INFORME DE FLUJO DE CAJA</div>
-                            <div style="color: #666; font-size: 11px;">${fechaGeneracion}</div>
-                        </td>
-                    </tr>
-                </table>
-
-                <!-- INFORMACIÓN DEL REPORTE -->
-                <table style="width: 100%; background: #f5f7fa; border-left: 4px solid #003978; margin-bottom: 25px;">
-                    <tr>
-                        <td style="padding: 12px 15px;">
-                            <strong style="color: #003978;">Período:</strong> ${periodoStr} &nbsp;&nbsp;|&nbsp;&nbsp;
-                            <strong style="color: #003978;">Centro de Costos:</strong> ${filtroCC} &nbsp;&nbsp;|&nbsp;&nbsp;
-                            <strong style="color: #003978;">Registros:</strong> ${data.length}
-                        </td>
-                    </tr>
-                </table>
-
-                <!-- RESUMEN EJECUTIVO -->
-                <div style="color: #003978; font-size: 16px; font-weight: bold; border-bottom: 2px solid #e0e6ed; padding-bottom: 8px; margin-bottom: 15px;">
-                    RESUMEN EJECUTIVO
-                </div>
-                
-                <table style="width: 100%; margin-bottom: 25px; border-collapse: separate; border-spacing: 10px 0;">
-                    <tr>
-                        <td style="width: 25%; background: #f5f5f5; border-left: 4px solid #616161; padding: 15px; text-align: center; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Saldo Inicial</div>
-                            <div style="font-size: 18px; font-weight: bold; color: #333;">${formatCurrency(saldoInicial)}</div>
-                        </td>
-                        <td style="width: 25%; background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 15px; text-align: center; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #2e7d32; text-transform: uppercase; margin-bottom: 5px;">Total Ingresos</div>
-                            <div style="font-size: 18px; font-weight: bold; color: #2e7d32;">${formatCurrency(totalIngresos)}</div>
-                        </td>
-                        <td style="width: 25%; background: #ffebee; border-left: 4px solid #c62828; padding: 15px; text-align: center; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #c62828; text-transform: uppercase; margin-bottom: 5px;">Total Egresos</div>
-                            <div style="font-size: 18px; font-weight: bold; color: #c62828;">${formatCurrency(-totalEgresos)}</div>
-                        </td>
-                        <td style="width: 25%; background: #e3f2fd; border-left: 4px solid #1565c0; padding: 15px; text-align: center; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #1565c0; text-transform: uppercase; margin-bottom: 5px;">Saldo Final</div>
-                            <div style="font-size: 18px; font-weight: bold; color: ${saldoFinal >= 0 ? '#1565c0' : '#c62828'};">${formatCurrency(saldoFinal)}</div>
-                        </td>
-                    </tr>
-                </table>
-
-                <!-- ANÁLISIS DE FLUJO -->
-                <table style="width: 100%; margin-bottom: 25px;">
-                    <tr>
-                        <td style="width: 48%; vertical-align: top; padding-right: 15px;">
-                            <div style="color: #2e7d32; font-size: 14px; font-weight: bold; margin-bottom: 10px; padding: 5px 10px; background: #e8f5e9; border-radius: 4px;">
-                                ▲ Principales Ingresos
-                            </div>
-                            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
-                                <tr style="background: #f5f5f5;">
-                                    <th style="padding: 8px; text-align: left; border-bottom: 2px solid #2e7d32;">Categoría</th>
-                                    <th style="padding: 8px; text-align: right; border-bottom: 2px solid #2e7d32;">Monto</th>
-                                </tr>
-                                ${topIngresos.length > 0 ? topIngresos.map((item, idx) => `
-                                    <tr style="background: ${idx % 2 === 0 ? '#fff' : '#fafafa'};">
-                                        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item[0]}</td>
-                                        <td style="padding: 8px; text-align: right; border-bottom: 1px solid #eee; color: #2e7d32; font-weight: bold;">${formatCurrency(item[1])}</td>
-                                    </tr>
-                                `).join('') : '<tr><td colspan="2" style="padding: 15px; text-align: center; color: #999;">Sin datos</td></tr>'}
-                            </table>
-                        </td>
-                        <td style="width: 48%; vertical-align: top; padding-left: 15px;">
-                            <div style="color: #c62828; font-size: 14px; font-weight: bold; margin-bottom: 10px; padding: 5px 10px; background: #ffebee; border-radius: 4px;">
-                                ▼ Principales Gastos
-                            </div>
-                            <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
-                                <tr style="background: #f5f5f5;">
-                                    <th style="padding: 8px; text-align: left; border-bottom: 2px solid #c62828;">Categoría</th>
-                                    <th style="padding: 8px; text-align: right; border-bottom: 2px solid #c62828;">Monto</th>
-                                </tr>
-                                ${topGastos.length > 0 ? topGastos.map((item, idx) => `
-                                    <tr style="background: ${idx % 2 === 0 ? '#fff' : '#fafafa'};">
-                                        <td style="padding: 8px; border-bottom: 1px solid #eee;">${item[0]}</td>
-                                        <td style="padding: 8px; text-align: right; border-bottom: 1px solid #eee; color: #c62828; font-weight: bold;">${formatCurrency(-item[1])}</td>
-                                    </tr>
-                                `).join('') : '<tr><td colspan="2" style="padding: 15px; text-align: center; color: #999;">Sin datos</td></tr>'}
-                            </table>
-                        </td>
-                    </tr>
-                </table>
-
-                <!-- INDICADORES CLAVE -->
-                <div style="color: #003978; font-size: 16px; font-weight: bold; border-bottom: 2px solid #e0e6ed; padding-bottom: 8px; margin-bottom: 15px;">
-                    INDICADORES CLAVE
-                </div>
-                
-                <table style="width: 100%; margin-bottom: 25px; border-collapse: separate; border-spacing: 10px 0;">
-                    <tr>
-                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Flujo Neto</div>
-                            <div style="font-size: 20px; font-weight: bold; color: ${flujoNeto >= 0 ? '#2e7d32' : '#c62828'};">${formatCurrency(flujoNeto)}</div>
-                            <div style="font-size: 9px; color: #666; margin-top: 5px;">Ingresos - Egresos</div>
-                        </td>
-                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Ratio I/E</div>
-                            <div style="font-size: 20px; font-weight: bold; color: #003978;">${ratio}</div>
-                            <div style="font-size: 9px; color: #666; margin-top: 5px;">${ratio !== 'N/A' && parseFloat(ratio) >= 1 ? 'Positivo' : 'Requiere atención'}</div>
-                        </td>
-                        <td style="width: 33%; background: #fff; border: 1px solid #e0e6ed; padding: 15px; border-radius: 5px;">
-                            <div style="font-size: 10px; color: #666; text-transform: uppercase; margin-bottom: 5px;">Variación</div>
-                            <div style="font-size: 20px; font-weight: bold; color: ${saldoFinal >= saldoInicial ? '#2e7d32' : '#c62828'};">${variacion}</div>
-                            <div style="font-size: 9px; color: #666; margin-top: 5px;">vs Saldo Inicial</div>
-                        </td>
-                    </tr>
-                </table>
-
-                <!-- PIE DE PÁGINA -->
-                <table style="width: 100%; border-top: 1px solid #e0e6ed; margin-top: 30px; padding-top: 15px;">
-                    <tr>
-                        <td style="color: #999; font-size: 10px;">CRAMSA - Control Financiero</td>
-                        <td style="color: #999; font-size: 10px; text-align: center;">Generado: ${horaGeneracion}</td>
-                        <td style="color: #999; font-size: 10px; text-align: right;">Página 1 de 1</td>
-                    </tr>
-                </table>
-            </div>
-        `;
-
-        // Crear contenedor temporal
-        const tempContainer = document.createElement("div");
-        tempContainer.style.position = "absolute";
-        tempContainer.style.left = "-9999px";
-        tempContainer.style.top = "0";
-        tempContainer.innerHTML = reportHTML;
-        document.body.appendChild(tempContainer);
-
-        // Esperar un momento para que el DOM se actualice
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-        // Obtener el elemento a convertir (el div interno con el contenido)
-        const elementToConvert = tempContainer.querySelector('div');
-        if (!elementToConvert) {
-            throw new Error("No se pudo encontrar el elemento para convertir a PDF");
-        }
-
-        // Configuración de html2pdf - Tamaño Carta
-        const opt = {
-            margin: [10, 10, 10, 10],
-            filename: `CRAMSA_Informe_${new Date().toISOString().slice(0, 10)}.pdf`,
-            image: { type: "jpeg", quality: 0.98 },
-            html2canvas: { 
-                scale: 2,
-                logging: false,
-                useCORS: true
-            },
-            jsPDF: { 
-                unit: "mm", 
-                format: "letter",
-                orientation: "portrait" 
-            }
-        };
-
-        // Generar PDF
-        await html2pdf().set(opt).from(elementToConvert).save();
-
-        // Limpiar
-        document.body.removeChild(tempContainer);
-    } catch (error) {
-        console.error("Error al generar PDF:", error);
-        let errorMsg = "Error al generar el PDF.";
-        if (error.message) {
-            errorMsg += " Detalles: " + error.message;
-        }
-        if (error.name === "SecurityError") {
-            errorMsg = "Error de seguridad al generar el PDF. Verifica que el navegador permite la generación de archivos.";
-        }
-        alert(errorMsg);
-    } finally {
-        // Remover loading
-        if (loadingOverlay && loadingOverlay.parentNode) {
-            document.body.removeChild(loadingOverlay);
-        }
-        // Limpiar contenedor temporal si existe
-        const tempContainer = document.querySelector('[style*="left: -9999px"]');
-        if (tempContainer && tempContainer.parentNode) {
-            document.body.removeChild(tempContainer);
-        }
-    }
-}
-
-// ===== NUEVO REGISTRO =====
-function openNewRecordModal() {
-    document.getElementById("editIndex").value = "-1"; // -1 indica nuevo registro
-    document.getElementById("modalTitle").textContent = "Nuevo Registro";
-
-    // Poblar selects con opciones únicas de los datos (o valores por defecto)
-    const tipos = getUniqueValues("tipo");
-    const ccs = getUniqueValues("cc");
-    const items = getUniqueValues("item");
-    const categorias = getUniqueValues("categoria");
-
-    populateSelect("editTipo", tipos.length ? tipos : ["01_Ingreso", "02_Cargo", "03_Saldos iniciales", "04_Movimiento Interno"], "");
-    populateSelect("editCC", ccs.length ? ccs : [""], "");
-    populateSelect("editItem", items.length ? items : [""], "");
-    populateSelect("editCategoria", categorias.length ? categorias : [""], "");
-
-    document.getElementById("editSubcategoria").value = "";
-    document.getElementById("editDetalle").value = "";
-    document.getElementById("editMonto").value = 0;
-    document.getElementById("editFecha").value = new Date().toISOString().split("T")[0];
-
-    document.getElementById("editModal").classList.add("active");
-}
-
 // ===== EDICIÓN INLINE =====
 function startInlineEdit(td, tr) {
-    // Si ya está en modo edición, no hacer nada
     if (td.classList.contains("editing")) return;
 
     const field = td.dataset.field;
@@ -2475,27 +2858,18 @@ function startInlineEdit(td, tr) {
     const row = state.rawData[idx];
     if (!row) return;
 
-    // Obtener valor actual
     let currentValue;
-    if (field === "fecha") {
-        currentValue = td.dataset.value || "";
-    } else if (field === "monto") {
-        currentValue = row.monto || 0;
+    if (field === "valor") {
+        currentValue = row.valor || 0;
     } else {
         currentValue = row[field] || "";
         if (currentValue === "-") currentValue = "";
     }
 
-    // Guardar contenido original
     const originalContent = td.innerHTML;
 
-    // Crear input según el tipo
     let input;
-    if (type === "date") {
-        input = document.createElement("input");
-        input.type = "date";
-        input.value = currentValue;
-    } else if (type === "number") {
+    if (type === "number") {
         input = document.createElement("input");
         input.type = "number";
         input.step = "1";
@@ -2512,58 +2886,48 @@ function startInlineEdit(td, tr) {
     input.focus();
     input.select();
 
-    // Función para guardar cambios
     const saveInlineEdit = () => {
         const newValue = input.value;
         td.classList.remove("editing");
 
-        // Actualizar el valor en state.rawData
-        if (field === "fecha") {
-            if (newValue) {
-                row.fecha = new Date(newValue);
-                row.year = row.fecha.getFullYear();
-                row.month = row.fecha.getMonth();
-                td.dataset.value = newValue;
-                td.innerHTML = row.fecha.toLocaleDateString("es-CL");
-            } else {
-                row.fecha = null;
-                row.year = null;
-                row.month = null;
-                td.dataset.value = "";
-                td.innerHTML = "-";
-            }
-        } else if (field === "monto") {
-            row.monto = parseFloat(newValue) || 0;
-            td.innerHTML = formatCurrency(row.monto);
+        if (field === "valor") {
+            row.valor = parseFloat(newValue) || 0;
+            td.innerHTML = formatCurrency(row.valor);
             td.className = "";
             td.dataset.editable = "true";
-            td.dataset.field = "monto";
+            td.dataset.field = "valor";
             td.dataset.type = "number";
-            if (row.monto < 0) td.classList.add("val-negative");
-            else if (row.monto > 0) td.classList.add("val-positive");
+            if (row.valor < 0) td.classList.add("val-negative");
+            else if (row.valor > 0) td.classList.add("val-positive");
+        } else if (field === "mes") {
+            row.mes = newValue || "";
+            const mesParsed = parseMes(row.mes);
+            if (mesParsed) {
+                row.year = mesParsed.year;
+                row.month = mesParsed.month;
+                row.mesKey = getMesKey(mesParsed.year, mesParsed.month);
+            }
+            td.innerHTML = newValue || "-";
         } else {
             row[field] = newValue || "";
-            if (field === "detalle") {
-                td.innerHTML = truncateText(newValue, 30) || "-";
+            if (field === "abono") {
+                td.innerHTML = truncateText(newValue, 25) || "-";
                 td.title = newValue || "";
             } else {
                 td.innerHTML = newValue || "-";
             }
         }
 
-        // Guardar en localStorage y actualizar filtros
         saveToLocalStorage();
         extractFilterOptions();
         applyFilters();
     };
 
-    // Cancelar edición
     const cancelInlineEdit = () => {
         td.classList.remove("editing");
         td.innerHTML = originalContent;
     };
 
-    // Event listeners
     input.addEventListener("blur", saveInlineEdit);
     input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
